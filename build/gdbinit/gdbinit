@@ -1,0 +1,2 @@
+source D:/ESP32project/esp_cam/build/gdbinit/symbols
+source D:/ESP32project/esp_cam/build/gdbinit/connect

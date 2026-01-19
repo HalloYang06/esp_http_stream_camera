@@ -1,0 +1,28 @@
+#ifndef NETWORK_H
+#define NETWORK_H
+
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/event_groups.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+
+#include "lwip/err.h"
+#include "lwip/sys.h"
+#include "esp_netif.h"
+#include "esp_http_server.h"
+#include "esp_http_client.h"
+#include "esp_camera.h"
+#include "img_converters.h"
+#include "mdns.h"  
+
+void wifi_init_sta(void);
+esp_err_t start_http_server(void);
+void stop_http_server(void);
+esp_err_t start_mdns_service(void);  
+
+#endif
