@@ -54,10 +54,13 @@ void app_main(void)
         ESP_LOGE(TAG, "Camera Init Failed:%s",esp_err_to_name(ret));
         return;
     }
-#ifdef LCD_ON
-    // 创建LCD显示任务
-    LcdDisplayCameraTaskCreate();
-#endif
+
+    // 创建摄像头采集任务和LCD任务（基于共享缓冲区架构）
+    ret = camera_tasks_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Camera Tasks Init Failed:%s", esp_err_to_name(ret));
+        return;
+    }
 
     // 启动mDNS服务（用于自动发现ESP32）
     ret = start_mdns_service();

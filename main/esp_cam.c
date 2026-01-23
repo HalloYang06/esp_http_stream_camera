@@ -382,69 +382,213 @@ void lcd_display_cam(){
     esp_camera_fb_return(fb);
 }
 /***************************LCD CODE END**********************************/
-/************************任务处理***************************************/
-QueueHandle_t camera_queue = NULL; // 创建摄像头队列
+/************************任务处理（共享变量+信号量）***************************************/
 
-static void camera_task(void *arg) {
-    camera_fb_t *fb = NULL;
-    ESP_LOGI(TAG, "Camera Task Started");
-    const TickType_t frame_delay = pdMS_TO_TICKS(50); // 限制帧率到~20fps，减少撕裂
+// 共享帧缓冲区（全局变量）
+static camera_fb_t *g_latest_fb = NULL;           // 最新帧指针
+static SemaphoreHandle_t g_fb_mutex = NULL;       // 互斥锁保护共享帧
+static SemaphoreHandle_t g_fb_ready_sem = NULL;   // 计数信号量，通知新帧就绪
+
+// 摄像头采集任务
+static void camera_capture_task(void *arg) {
+    ESP_LOGI(TAG, "Camera Capture Task Started on Core %d", xPortGetCoreID());
+    const TickType_t frame_delay = pdMS_TO_TICKS(50); // 约20fps
 
     while (1) {
-        fb = esp_camera_fb_get();
-        if (fb == NULL){
-            ESP_LOGE(TAG, "Camera Capture Failed");
+        // 获取新帧
+        camera_fb_t *new_fb = esp_camera_fb_get();
+        if (new_fb == NULL) {
+            ESP_LOGE(TAG, "Camera capture failed");
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
-        // 发送帧到队列，如果队列满则跳过该帧
-        if (xQueueSend(camera_queue, &fb, 0) != pdTRUE) {
-            ESP_LOGW(TAG, "Queue full, dropping frame");
-            esp_camera_fb_return(fb); // 队列满时释放帧
+        // 加锁更新共享帧
+        xSemaphoreTake(g_fb_mutex, portMAX_DELAY);
+
+        // 释放旧帧
+        if (g_latest_fb != NULL) {
+            esp_camera_fb_return(g_latest_fb);
         }
 
-        vTaskDelay(frame_delay); // 控制采集帧率
+        // 保存新帧指针
+        g_latest_fb = new_fb;
+
+        xSemaphoreGive(g_fb_mutex);
+
+        // 通知消费者（HTTP和LCD）有新帧
+        // 使用计数信号量，可以连续give，支持多个消费者
+        xSemaphoreGive(g_fb_ready_sem);
+
+        vTaskDelay(frame_delay);
     }
     vTaskDelete(NULL);
 }
+
+// LCD显示任务（可选，通过LCD_ON控制）
 static void lcd_task(void *arg) {
-    camera_fb_t *fb = NULL;
-    ESP_LOGI(TAG, "LCD Task Started");
-    const uint8_t per_line = 20; // 增加到60行，减少分块次数，提升流畅度
+    ESP_LOGI(TAG, "LCD Task Started on Core %d", xPortGetCoreID());
+    const uint8_t lines_per_draw = 20; // 每次绘制20行，减少分块次数
+
     while (1) {
-        if (xQueueReceive(camera_queue, &fb, portMAX_DELAY)) {
-            uint16_t *buf = (uint16_t *)fb->buf; // 先转换为uint16_t指针
-            for(uint16_t y = 0; y < fb->height; y += per_line){
-                uint16_t lines_to_draw = (y + per_line <= fb->height) ? per_line : (fb->height - y);
-                // 修正指针偏移计算：RGB565每像素2字节
-                esp_lcd_panel_draw_bitmap(panel_handle, 0, y, fb->width, y + lines_to_draw,
-                            (uint16_t *)(buf + y * fb->width));
-                taskYIELD(); // 使用yield代替delay，减少撕裂
+        // 等待新帧通知（最多等待100ms）
+        if (xSemaphoreTake(g_fb_ready_sem, pdMS_TO_TICKS(100)) == pdTRUE) {
+
+            // 加锁读取最新帧
+            xSemaphoreTake(g_fb_mutex, portMAX_DELAY);
+
+            if (g_latest_fb != NULL) {
+                // 复制帧数据（避免在显示过程中帧被释放）
+                size_t buf_len = g_latest_fb->len;
+                uint16_t width = g_latest_fb->width;
+                uint16_t height = g_latest_fb->height;
+
+                // 为RGB565数据分配临时缓冲区
+                uint16_t *display_buf = (uint16_t *)heap_caps_malloc(buf_len, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+
+                if (display_buf != NULL) {
+                    memcpy(display_buf, g_latest_fb->buf, buf_len);
+
+                    // 解锁，允许采集任务继续更新
+                    xSemaphoreGive(g_fb_mutex);
+
+                    // 分块绘制到LCD（在解锁后进行，不阻塞采集任务）
+                    for (uint16_t y = 0; y < height; y += lines_per_draw) {
+                        uint16_t lines_to_draw = (y + lines_per_draw <= height) ? lines_per_draw : (height - y);
+
+                        esp_lcd_panel_draw_bitmap(panel_handle, 0, y, width, y + lines_to_draw,
+                                                  (uint16_t *)(display_buf + y * width));
+
+                        taskYIELD(); // 让出CPU，减少撕裂
+                    }
+
+                    free(display_buf);
+                } else {
+                    ESP_LOGE(TAG, "Failed to allocate display buffer");
+                    xSemaphoreGive(g_fb_mutex);
+                }
+            } else {
+                xSemaphoreGive(g_fb_mutex);
             }
-            esp_camera_fb_return(fb);
         }
     }
     vTaskDelete(NULL);
 }
-void LcdDisplayCameraTaskCreate(){
-    ESP_LOGI(TAG, "Creating Camera and LCD Tasks");
-    camera_queue = xQueueCreate(2, sizeof(camera_fb_t *)); // 创建一个队列，最多存储2个摄像头帧指针
-    if (camera_queue == NULL) {
-        ESP_LOGE(TAG, "Failed to create camera queue");
-        return;
+
+// 获取最新帧的副本（供HTTP和其他消费者使用）
+camera_fb_t* camera_get_latest_frame(TickType_t timeout_ms) {
+    // 等待新帧信号（支持多消费者，计数信号量）
+    if (xSemaphoreTake(g_fb_ready_sem, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return NULL; // 超时
     }
-    // Camera任务：优先级4，在Core 1运行
-    BaseType_t xReturned = xTaskCreatePinnedToCore(camera_task, "camera_task", 8192, NULL, 4, NULL, 1);
-    if (xReturned != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create camera task");
-        return;
+
+    camera_fb_t *fb_copy = NULL;
+
+    // 加锁读取共享帧
+    xSemaphoreTake(g_fb_mutex, portMAX_DELAY);
+
+    if (g_latest_fb != NULL) {
+        // 分配新的帧结构体
+        fb_copy = (camera_fb_t *)malloc(sizeof(camera_fb_t));
+        if (fb_copy != NULL) {
+            // 复制帧元数据
+            memcpy(fb_copy, g_latest_fb, sizeof(camera_fb_t));
+
+            // 分配并复制帧数据
+            fb_copy->buf = (uint8_t *)malloc(g_latest_fb->len);
+            if (fb_copy->buf != NULL) {
+                memcpy(fb_copy->buf, g_latest_fb->buf, g_latest_fb->len);
+            } else {
+                ESP_LOGE(TAG, "Failed to allocate frame buffer");
+                free(fb_copy);
+                fb_copy = NULL;
+            }
+        } else {
+            ESP_LOGE(TAG, "Failed to allocate frame copy");
+        }
     }
-    // LCD任务：优先级6（更高），在Core 0运行，优先完成绘制减少撕裂
-    xReturned = xTaskCreatePinnedToCore(lcd_task, "lcd_task", 6144, NULL, 6, NULL, 0);
-    if (xReturned != pdPASS) {
+
+    xSemaphoreGive(g_fb_mutex);
+
+    return fb_copy;
+}
+
+// 释放帧副本（由camera_get_latest_frame返回的帧）
+void camera_frame_release(camera_fb_t *fb) {
+    if (fb != NULL) {
+        if (fb->buf != NULL) {
+            free(fb->buf);
+        }
+        free(fb);
+    }
+}
+
+// 初始化摄像头采集系统
+esp_err_t camera_tasks_init(void) {
+    ESP_LOGI(TAG, "Initializing camera tasks system");
+
+    // 创建互斥锁
+    g_fb_mutex = xSemaphoreCreateMutex();
+    if (g_fb_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create frame mutex");
+        return ESP_FAIL;
+    }
+
+    // 创建计数信号量（最大计数10，初始值0）
+    // 支持最多10个消费者同时等待
+    g_fb_ready_sem = xSemaphoreCreateCounting(10, 0);
+    if (g_fb_ready_sem == NULL) {
+        ESP_LOGE(TAG, "Failed to create frame ready semaphore");
+        vSemaphoreDelete(g_fb_mutex);
+        return ESP_FAIL;
+    }
+
+    // 创建摄像头采集任务（Core 1，优先级4）
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        camera_capture_task,
+        "cam_capture",
+        8192,
+        NULL,
+        4,
+        NULL,
+        1  // Core 1
+    );
+
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create camera capture task");
+        vSemaphoreDelete(g_fb_mutex);
+        vSemaphoreDelete(g_fb_ready_sem);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Camera capture task created successfully");
+
+#ifdef LCD_ON
+    // 创建LCD显示任务（Core 0，优先级6）
+    ret = xTaskCreatePinnedToCore(
+        lcd_task,
+        "lcd_display",
+        6144,
+        NULL,
+        6,
+        NULL,
+        0  // Core 0
+    );
+
+    if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create LCD task");
-        return;
+        // 采集任务已创建，继续运行，只是没有LCD显示
+    } else {
+        ESP_LOGI(TAG, "LCD display task created successfully");
     }
-    ESP_LOGI(TAG, "Camera and LCD Tasks Created Successfully");
+#else
+    ESP_LOGI(TAG, "LCD_ON not defined, LCD task disabled");
+#endif
+
+    return ESP_OK;
+}
+
+// 保持兼容性：旧的函数名
+void LcdDisplayCameraTaskCreate() {
+    camera_tasks_init();
 }

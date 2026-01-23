@@ -99,8 +99,21 @@ void pca9557_init(void);
 void pca9557_set_pin(uint8_t pin, uint8_t level);
 esp_err_t pca9557_write_register( uint8_t reg_addr, uint8_t data);
 /***************    IO扩展芯片 ↑   *************************/
+
+/*************** 摄像头任务管理 ↓ *************************/
+// 初始化摄像头采集系统（创建共享缓冲区和采集任务）
+esp_err_t camera_tasks_init(void);
+
+// 获取最新帧的副本（用于HTTP和LCD）
+// 返回：成功返回帧指针，失败返回NULL
+// 注意：调用者负责使用完后调用 camera_frame_release() 释放
+camera_fb_t* camera_get_latest_frame(TickType_t timeout_ms);
+
+// 释放帧缓冲区
+void camera_frame_release(camera_fb_t *fb);
+
+// 旧的LCD任务创建函数（保持兼容性，内部会调用camera_tasks_init）
 void LcdDisplayCameraTaskCreate();
-static void lcd_task(void *arg);
-static void camera_task(void *arg) ;
+/*************** 摄像头任务管理 ↑ *************************/
 /***********************************************************/
 #endif

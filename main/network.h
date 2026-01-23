@@ -27,10 +27,10 @@ bool wifi_is_configured(void);
 void wifi_save_config(const char *ssid, const char *password);
 void wifi_clear_config(void);
 
-// 原有功能
+
 void wifi_init_sta(void);
 esp_err_t start_http_server(void);
 void stop_http_server(void);
-esp_err_t start_mdns_service(void);
+esp_err_t start_mdns_service(void);//启用·mdns服务
 
 #endif

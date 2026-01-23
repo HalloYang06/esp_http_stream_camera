@@ -555,10 +555,9 @@ static esp_err_t index_handler(httpd_req_t *req)
     return httpd_resp_send(req, html, strlen(html));
 }
 
-// MJPEG视频流处理器
+// MJPEG视频流处理器（使用共享帧缓冲区）
 static esp_err_t stream_handler(httpd_req_t *req)
 {
-    camera_fb_t * fb = NULL;
     esp_err_t res = ESP_OK;
     size_t _jpg_buf_len = 0;
     uint8_t * _jpg_buf = NULL;
@@ -573,9 +572,10 @@ static esp_err_t stream_handler(httpd_req_t *req)
     }
 
     while(true){
-        fb = esp_camera_fb_get();
+        // 从共享缓冲区获取最新帧（等待最多1000ms）
+        camera_fb_t *fb = camera_get_latest_frame(1000);
         if (!fb) {
-            ESP_LOGE("HTTP", "Camera capture failed");
+            ESP_LOGE("HTTP", "Failed to get frame from shared buffer");
             res = ESP_FAIL;
             break;
         }
@@ -586,7 +586,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
             is_converted = frame2jpg(fb, 50, &_jpg_buf, &_jpg_buf_len);
             if(!is_converted){
                 ESP_LOGE("HTTP", "JPEG compression failed");
-                esp_camera_fb_return(fb);
+                camera_frame_release(fb);
                 res = ESP_FAIL;
                 break;
             }
@@ -614,7 +614,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
         if(is_converted && _jpg_buf){
             free(_jpg_buf);
         }
-        esp_camera_fb_return(fb);
+
+        // 释放帧副本
+        camera_frame_release(fb);
 
         if(res != ESP_OK){
             ESP_LOGI("HTTP", "Stream client disconnected");
