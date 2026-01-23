@@ -98,9 +98,9 @@ cv2.destroyAllWindows()
 ## 故障排除
 ### 1.ping测试 
          ping [your ip]
-    2.进行端口测试
+### 2.进行端口测试
          powershell -Command "Test-NetConnection -ComputerName [your ip] -Port 80"
-    3.相应测试
+### 3.相应测试
          curl -v http://[your ip]/ 2>&1 | head -30
 
 ### 问题1：浏览器无法连接

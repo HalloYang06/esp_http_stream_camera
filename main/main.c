@@ -10,8 +10,21 @@ void app_main(void)
     const char *TAG = "app_main";
     esp_err_t ret;
 
-    // 先初始化WiFi
-    wifi_init_sta();
+    // 检查是否已配置WiFi
+    if (wifi_is_configured()) {
+        ESP_LOGI(TAG, "WiFi已配置，使用STA模式连接");
+        wifi_init_sta();
+    } else {
+        ESP_LOGI(TAG, "首次启动，进入AP配网模式");
+        ESP_LOGI(TAG, "请连接热点: ESP32-CAM-Setup");
+        ESP_LOGI(TAG, "密码: 12345678");
+        ESP_LOGI(TAG, "然后访问: http://192.168.4.1");
+        wifi_init_smartconfig();
+
+        // 配网模式下不初始化摄像头，等待配网完成后重启
+        ESP_LOGI(TAG, "配网模式运行中，等待用户配置WiFi...");
+        return;
+    }
 
     vTaskDelay(pdMS_TO_TICKS(500));
 
