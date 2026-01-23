@@ -131,14 +131,14 @@ static void esp_event_handler(void* event_handler_arg,
             case WIFI_EVENT_AP_STACONNECTED:
                 {
                     wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
-                    ESP_LOGI("WIFI", "Station "MACSTR" joined, AID=%d",
+                    ESP_LOGI("WIFI", "Station " MACSTR " joined, AID=%d",
                              MAC2STR(event->mac), event->aid);
                 }
                 break;
             case WIFI_EVENT_AP_STADISCONNECTED:
                 {
                     wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
-                    ESP_LOGI("WIFI", "Station "MACSTR" left, AID=%d",
+                    ESP_LOGI("WIFI", "Station " MACSTR " left, AID=%d",
                              MAC2STR(event->mac), event->aid);
                 }
                 break;
@@ -337,7 +337,8 @@ static esp_err_t start_config_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.max_uri_handlers = 4;
-    config.stack_size = 6144;
+    config.stack_size = 8192;  // 增加栈大小
+    config.uri_match_fn = httpd_uri_match_wildcard;
 
     httpd_uri_t config_page_uri = {
         .uri       = "/",
@@ -624,6 +625,14 @@ static esp_err_t stream_handler(httpd_req_t *req)
     return res;
 }
 
+// favicon处理器（避免404错误）
+static esp_err_t favicon_handler(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
 // 启动HTTP服务器
 esp_err_t start_http_server(void)
 {
@@ -632,7 +641,8 @@ esp_err_t start_http_server(void)
     config.ctrl_port = 32768;
     config.max_open_sockets = 7;
     config.max_uri_handlers = 8;
-    config.stack_size = 8192;
+    config.stack_size = 12288;  // 增加栈大小到12KB
+    config.uri_match_fn = httpd_uri_match_wildcard;
 
     // 注册主页URI
     httpd_uri_t index_uri = {
@@ -650,11 +660,20 @@ esp_err_t start_http_server(void)
         .user_ctx  = NULL
     };
 
+    // 注册favicon URI
+    httpd_uri_t favicon_uri = {
+        .uri       = "/favicon.ico",
+        .method    = HTTP_GET,
+        .handler   = favicon_handler,
+        .user_ctx  = NULL
+    };
+
     ESP_LOGI("HTTP", "Starting HTTP server on port %d", config.server_port);
 
     if (httpd_start(&camera_httpd, &config) == ESP_OK) {
         httpd_register_uri_handler(camera_httpd, &index_uri);
         httpd_register_uri_handler(camera_httpd, &stream_uri);
+        httpd_register_uri_handler(camera_httpd, &favicon_uri);
         ESP_LOGI("HTTP", "HTTP server started successfully");
         return ESP_OK;
     }

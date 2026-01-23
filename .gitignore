@@ -1,0 +1,46 @@
+# ESP-IDF Build 输出
+build/
+*.bin
+*.elf
+*.map
+
+# Flash 下载工具生成的文件
+flash_project_args
+download.config
+
+# SDK 配置
+sdkconfig.old
+sdkconfig.defaults.old
+
+# Python 编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# 依赖和缓存
+dependencies.lock
+managed_components/.component_hash
+.managed_components/
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+*.bak
+*.cache
