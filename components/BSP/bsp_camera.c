@@ -346,6 +346,4 @@ bool bsp_camera_lcd_display_is_running(void)
     return lcd_display_running;
 }
 
-void LcdDisplayCameraTaskCreate(void)
-{
-}
+

@@ -95,17 +95,9 @@ void app_main(void)
     // 初始化摄像头（RGB565格式）
     ESP_LOGI(TAG, "Initializing camera...");
     ret=bsp_camera_init();
+    //LcdDisplayCameraTaskCreate();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Camera Init Failed:%s",esp_err_to_name(ret));
 
-        // 摄像头失败时显示错误信息
-        bsp_display_lock(0);
-        lv_obj_t *label = lv_label_create(lv_screen_active());
-        lv_label_set_text(label, "Camera Init Failed!\nCheck connections");
-        lv_obj_set_style_text_color(label, lv_color_hex(0xFF0000), 0);
-        lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
-        lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
-        bsp_display_unlock();
 
         ESP_LOGI(TAG, "System running without camera - touch screen to test");
         return;  // 继续运行，显示错误信息
@@ -129,8 +121,9 @@ void app_main(void)
 
     ESP_LOGI(TAG, "UI initialized successfully");
     ESP_LOGI(TAG, "System ready - Touch buttons to interact");
-/*
-    // 测试网络连接（访问百度）
+    // 创建摄像头和LCD任务
+    //LcdDisplayCameraTaskCreate();
+/*    // 测试网络连接（访问百度）
     ESP_LOGI(TAG, "Testing network connectivity...");
     esp_http_client_config_t test_config = {
         .url = "http://www.baidu.com",

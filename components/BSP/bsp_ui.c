@@ -10,6 +10,7 @@
 #include <string.h>
 #include <inttypes.h>
 static const char *TAG = "bsp_ui";
+LV_FONT_DECLARE(lv_font_siyuanbold_jibenhanzi_16);
 size_t jpeg_len = 0;
 // UI 控件
 static lv_obj_t *btn_capture = NULL;
@@ -528,7 +529,7 @@ static void capture_and_upload_task(void *arg)
 
     // ========== 2. 获取摄像头帧 ==========
     bsp_ui_update_status("Capturing...");
-    fb = bsp_camera_get_frame(1000);
+    fb = esp_camera_fb_get();
     if (!fb) {
         ESP_LOGE(TAG, "Failed to capture image - no frame available");
         bsp_ui_update_status("Capture failed");
@@ -578,7 +579,7 @@ static void capture_and_upload_task(void *arg)
 
     // ========== 5. 调用AI识别 ==========
     bsp_ui_update_status("Analyzing...");
-    // 二选一：要么用本地Python服务器，要么直接调用GLM官方API
+    
     send_url_to_glm_server(image_url); // 用Python服务器
     // call_glm_api(image_url); // 直接ESP32调用GLM API，二选一注释掉
 
@@ -588,9 +589,9 @@ exit:
     if (need_free_jpeg && jpeg_buf != NULL) {
         free(jpeg_buf);
     }
-    // 释放摄像头帧
+    // 释放摄像头帧（使用 esp_camera_fb_return 归还原始帧）
     if (fb != NULL) {
-        bsp_camera_frame_free(fb);
+        esp_camera_fb_return(fb);
     }
     // 释放图片URL
     if (image_url != NULL) {
@@ -809,11 +810,11 @@ esp_err_t bsp_ui_init(void)
 
     // 创建结果文本框（底部中间，占据大部分宽度）
     textarea_result = lv_textarea_create(screen);
-    lv_obj_set_size(textarea_result, 300, 80);
+    lv_obj_set_size(textarea_result, 300, 150);
     lv_obj_align(textarea_result, LV_ALIGN_BOTTOM_MID, 0, -40);
     lv_textarea_set_text(textarea_result, "AI result will show here...");
     lv_textarea_set_one_line(textarea_result, false);
-    lv_obj_set_style_text_font(textarea_result, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(textarea_result, &lv_font_siyuanbold_jibenhanzi_16, 0);
 
     // ========== 摄像头查看页面控件 ==========
     // 创建"Cancel"按钮（底部中间，默认隐藏）

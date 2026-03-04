@@ -49,7 +49,7 @@ esp_err_t lcd_init();
 void lcd_cs(uint8_t level);
 void bsp_display_lock(uint32_t timeout_ms);
 void bsp_display_unlock(void);
-
+void LcdDisplayCameraTaskCreate();
 typedef struct {
     uint32_t max_transfer_sz;
 } bsp_display_config_t;

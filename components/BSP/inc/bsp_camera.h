@@ -100,10 +100,7 @@ camera_fb_t* bsp_camera_get_frame(TickType_t timeout_ms);
  */
 void bsp_camera_frame_free(camera_fb_t *fb);
 
-/**
- * @brief Legacy function name for compatibility
- */
-void LcdDisplayCameraTaskCreate(void);
+
 
 /**
  * @brief Start LCD display task

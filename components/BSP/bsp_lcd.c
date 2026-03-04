@@ -1,5 +1,6 @@
 #include "bsp_lcd.h"
 #include "string.h"
+#include "bsp_camera.h"
 /***************************LCD CODE START*******************************/
 void lcd_cs(uint8_t level){
     pca9557_set_pin(LCD_CS_GPIO, level); //PCA9557_GPIO_NUM_1
@@ -302,4 +303,69 @@ esp_err_t bsp_display_new(const bsp_display_config_t *config,
     }
 
     return ret;
+}
+QueueHandle_t camera_queue = NULL; // 创建摄像头队列
+
+static void camera_task(void *arg) {
+    camera_fb_t *fb = NULL;
+    ESP_LOGI(TAG, "Camera Task Started");
+    const TickType_t frame_delay = pdMS_TO_TICKS(50); // 限制帧率到~20fps，减少撕裂
+
+    while (1) {
+        fb = esp_camera_fb_get();
+        if (fb == NULL){
+            ESP_LOGE(TAG, "Camera Capture Failed");
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        // 发送帧到队列，如果队列满则跳过该帧
+        if (xQueueSend(camera_queue, &fb, 0) != pdTRUE) {
+            ESP_LOGW(TAG, "Queue full, dropping frame");
+            esp_camera_fb_return(fb); // 队列满时释放帧
+        }
+
+        vTaskDelay(frame_delay); // 控制采集帧率
+    }
+    vTaskDelete(NULL);
+}
+static void lcd_task(void *arg) {
+    camera_fb_t *fb = NULL;
+    ESP_LOGI(TAG, "LCD Task Started");
+    const uint8_t per_line = 20; // 增加到60行，减少分块次数，提升流畅度
+    while (1) {
+        if (xQueueReceive(camera_queue, &fb, portMAX_DELAY)) {
+            uint16_t *buf = (uint16_t *)fb->buf; // 先转换为uint16_t指针
+            for(uint16_t y = 0; y < fb->height; y += per_line){
+                uint16_t lines_to_draw = (y + per_line <= fb->height) ? per_line : (fb->height - y);
+                // 修正指针偏移计算：RGB565每像素2字节
+                esp_lcd_panel_draw_bitmap(panel_handle, 0, y, fb->width, y + lines_to_draw,
+                            (uint16_t *)(buf + y * fb->width));
+                taskYIELD(); // 使用yield代替delay，减少撕裂
+            }
+            esp_camera_fb_return(fb);
+        }
+    }
+    vTaskDelete(NULL);
+}
+void LcdDisplayCameraTaskCreate(){
+    ESP_LOGI(TAG, "Creating Camera and LCD Tasks");
+    camera_queue = xQueueCreate(2, sizeof(camera_fb_t *)); // 创建一个队列，最多存储2个摄像头帧指针
+    if (camera_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create camera queue");
+        return;
+    }
+    // Camera任务：优先级4，在Core 1运行
+    BaseType_t xReturned = xTaskCreatePinnedToCore(camera_task, "camera_task", 8192, NULL, 4, NULL, 1);
+    if (xReturned != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create camera task");
+        return;
+    }
+    // LCD任务：优先级6（更高），在Core 0运行，优先完成绘制减少撕裂
+    xReturned = xTaskCreatePinnedToCore(lcd_task, "lcd_task", 6144, NULL, 6, NULL, 0);
+    if (xReturned != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create LCD task");
+        return;
+    }
+    ESP_LOGI(TAG, "Camera and LCD Tasks Created Successfully");
 }

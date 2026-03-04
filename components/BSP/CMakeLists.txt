@@ -1,4 +1,4 @@
-set(srcs  "bsp_lcd.c" "bsp_camera.c" "bsp_pca9557.c" "bsp_i2cbus.c" "bsp_lvgl.c" "bsp_touch.c" "bsp_ui.c" )
+set(srcs  "bsp_lcd.c" "bsp_camera.c" "bsp_pca9557.c" "bsp_i2cbus.c" "bsp_lvgl.c" "bsp_touch.c" "bsp_ui.c" "myfont/lv_font_siyuanbold_jibenhanzi_16.c")
 
 idf_component_register(
     SRCS ${srcs}
