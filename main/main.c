@@ -1,8 +1,9 @@
 #include "stdio.h"
 #include "esp_cam.h"
-#include "yingwu.h"
+
 #include "network.h"
-#
+#include "bsp_lcd.h"
+
 void app_main(void)
 {
 

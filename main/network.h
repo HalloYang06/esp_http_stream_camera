@@ -20,7 +20,8 @@
 #include "esp_camera.h"
 #include "img_converters.h"
 #include "mdns.h"  
-
+#include "bsp_lcd.h"
+#include "esp_cam.h"
 // WiFi配网功能
 void wifi_init_smartconfig(void);
 bool wifi_is_configured(void);

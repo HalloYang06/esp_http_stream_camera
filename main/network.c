@@ -1,4 +1,5 @@
 #include "network.h"
+#include "esp_cam.h"
 #include "stdio.h"
 
 // NVS存储相关
