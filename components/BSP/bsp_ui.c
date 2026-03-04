@@ -630,13 +630,14 @@ static void btn_capture_cb(lv_event_t *e)
     }
 }
 
-// 摄像头显示任务 - 使用 Canvas + 字节交换
+// 摄像头显示任务 - 直接使用 esp_camera_fb_get()
 static void camera_display_task(void *arg)
 {
-    ESP_LOGI(TAG, "Camera display task started (Canvas Mode with byte swap)");
+    ESP_LOGI(TAG, "Camera display task started (Canvas Mode)");
 
     while (camera_view_active) {
-        camera_fb_t *fb = bsp_camera_get_frame(1000);
+        // 直接获取原始帧，和 bsp_lcd.c 中的方式一样
+        camera_fb_t *fb = esp_camera_fb_get();
         if (fb == NULL) {
             ESP_LOGW(TAG, "Failed to get camera frame");
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -644,14 +645,8 @@ static void camera_display_task(void *arg)
         }
 
         if (canvas_buffer != NULL && camera_canvas != NULL) {
-            // 字节交换：GC0308 输出 Big-Endian，LVGL/LCD 需要 Little-Endian
-            uint16_t *src = (uint16_t *)fb->buf;
-            uint16_t *dst = (uint16_t *)canvas_buffer;
-            size_t pixels = fb->width * fb->height;
-
-            for (size_t i = 0; i < pixels; i++) {
-                dst[i] = __builtin_bswap16(src[i]);  // 交换高低字节
-            }
+            // 直接复制数据，不做字节交换（和 bsp_lcd.c 一样）
+            memcpy(canvas_buffer, fb->buf, fb->len);
 
             // 通知 LVGL 重绘画布
             bsp_display_lock(0);
@@ -659,8 +654,11 @@ static void camera_display_task(void *arg)
             bsp_display_unlock();
         }
 
-        bsp_camera_frame_free(fb);
-        vTaskDelay(pdMS_TO_TICKS(20)); // 约 50fps
+        // 归还原始帧
+        esp_camera_fb_return(fb);
+
+        // 增加延迟，避免饿死IDLE任务
+        vTaskDelay(pdMS_TO_TICKS(50)); // 约 20fps，给IDLE任务更多时间
     }
 
     ESP_LOGI(TAG, "Camera display task exiting");
@@ -720,7 +718,7 @@ static void btn_start_cb(lv_event_t *e)
             "cam_display",
             4096,
             NULL,
-            3,  // 降低优先级到 3，避免饿死 IDLE
+            1,  // 优先级降到1，IDLE任务是0，确保IDLE能运行
             &camera_display_task_handle,
             0  // Core 0
         );
@@ -810,9 +808,9 @@ esp_err_t bsp_ui_init(void)
 
     // 创建结果文本框（底部中间，占据大部分宽度）
     textarea_result = lv_textarea_create(screen);
-    lv_obj_set_size(textarea_result, 300, 150);
+    lv_obj_set_size(textarea_result, 300, 80);
     lv_obj_align(textarea_result, LV_ALIGN_BOTTOM_MID, 0, -40);
-    lv_textarea_set_text(textarea_result, "AI result will show here...");
+    lv_textarea_set_text(textarea_result, "图片的主要内容是一个人的脸部局部 (包含头发和佩戴的眼镜). （）。，人物可能在进行自拍。");
     lv_textarea_set_one_line(textarea_result, false);
     lv_obj_set_style_text_font(textarea_result, &lv_font_siyuanbold_jibenhanzi_16, 0);
 
