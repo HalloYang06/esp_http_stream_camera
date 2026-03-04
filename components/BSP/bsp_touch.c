@@ -3,11 +3,12 @@
 #include "esp_lcd_touch_ft5x06.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
-
+#define BSP_TOUCH_X_MAX 320
+#define BSP_TOUCH_Y_MAX 240
 static const char *TAG = "bsp_touch";
-static lv_indev_t touch_handle = NULL;
+static esp_lcd_touch_handle_t touch_handle = NULL;
 
-lv_indev_t bsp_touch_init(void)
+esp_lcd_touch_handle_t bsp_touch_init(void)
 {
     if (touch_handle != NULL) {
         ESP_LOGW(TAG, "Touch already initialized");
@@ -63,8 +64,8 @@ lv_indev_t bsp_touch_init(void)
     }
 
     esp_lcd_touch_config_t tp_cfg = {
-        .x_max = 320,
-        .y_max = 240,
+        .x_max = BSP_TOUCH_X_MAX,
+        .y_max = BSP_TOUCH_Y_MAX,  
         .rst_gpio_num = BSP_TOUCH_RST_GPIO,
         .int_gpio_num = BSP_TOUCH_INT_GPIO,
         .levels = {
@@ -72,8 +73,8 @@ lv_indev_t bsp_touch_init(void)
             .interrupt = 0,
         },
         .flags = {
-            .swap_xy = 0,
-            .mirror_x = 1,
+            .swap_xy = 1,
+            .mirror_x = 0,
             .mirror_y = 0,
         },
     };
@@ -109,7 +110,12 @@ esp_err_t bsp_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
 
     if (touch_pressed && touch_cnt > 0) {
         *x = touch_x[0];
-        *y = touch_y[0];
+        *y = BSP_TOUCH_Y_MAX - touch_y[0];
+
+        // 限制范围
+        if (*x >= BSP_TOUCH_X_MAX) *x = BSP_TOUCH_X_MAX - 1;
+        if (*y >= BSP_TOUCH_Y_MAX) *y = BSP_TOUCH_Y_MAX - 1;
+
         *pressed = true;
     } else {
         *pressed = false;

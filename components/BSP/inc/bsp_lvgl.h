@@ -3,6 +3,7 @@
 
 #include "esp_err.h"
 #include "lvgl.h"
+#include "esp_camera.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,6 +26,28 @@ esp_err_t bsp_lvgl_start_tasks(void);
  * @return 显示驱动句柄
  */
 lv_display_t* bsp_lvgl_get_display(void);
+
+/**
+ * @brief 创建摄像头显示任务（使用 LVGL Canvas）
+ * @return ESP_OK 成功，ESP_FAIL 失败
+ */
+esp_err_t bsp_lvgl_camera_task_create(void);
+
+/**
+ * @brief 初始化触摸输入设备
+ * @return ESP_OK 成功，ESP_FAIL 失败
+ */
+esp_err_t bsp_lvgl_touch_init(void);
+
+/**
+ * @brief 暂停 LVGL Timer 任务
+ */
+void bsp_lvgl_timer_pause(void);
+
+/**
+ * @brief 恢复 LVGL Timer 任务
+ */
+void bsp_lvgl_timer_resume(void);
 
 #ifdef __cplusplus
 }

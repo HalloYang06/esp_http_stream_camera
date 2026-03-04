@@ -2,7 +2,7 @@
 #define _BSP_TOUCH_H_
 
 #include "esp_err.h"
-#include "lvgl.h"
+#include "esp_lcd_touch.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,7 +18,7 @@ extern "C" {
  * @brief 初始化触摸屏
  * @return 触摸屏句柄，失败返回NULL
  */
-lv_indev_t bsp_touch_init(void);
+esp_lcd_touch_handle_t bsp_touch_init(void);
 
 /**
  * @brief 读取触摸点坐标

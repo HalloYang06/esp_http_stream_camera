@@ -69,7 +69,7 @@ esp_lcd_panel_handle_t panel_handle = NULL;
 esp_lcd_panel_io_handle_t io_handle = NULL;
 
 // DMA缓冲区用于分块传输（每次传输50行）
-#define LCD_DMA_CHUNK_LINES 50
+#define LCD_DMA_CHUNK_LINES 10  // 减小到 10 行，只需要 6400 字节
 static uint8_t *lcd_dma_buffer = NULL;
 esp_err_t display_new(){
     ESP_LOGI("LCD", "display_new函数开始执行");
@@ -134,9 +134,8 @@ esp_err_t display_new(){
     lcd_cs(0); // 使能LCD片选
     esp_lcd_panel_init(panel_handle);
     esp_lcd_panel_invert_color(panel_handle, true);
-    // 恢复原始配置
     esp_lcd_panel_swap_xy(panel_handle, true);
-    esp_lcd_panel_mirror(panel_handle, false, false);
+    esp_lcd_panel_mirror(panel_handle, true, false);  // 垂直镜像
 
     // 分配DMA缓冲区（必须在内部RAM中用于SPI DMA）
     size_t dma_buffer_size = BSP_LCD_H_RES * LCD_DMA_CHUNK_LINES * sizeof(uint16_t);
@@ -165,7 +164,7 @@ esp_err_t display_new(){
 
 }
 void lcd_draw_bitmap(int x_start, int y_start, int x_end, int y_end, const void *bitmap){
-    // ESP32-S3的SPI DMA无法直接访问PSRAM，需要分块传输
+    
     if (!lcd_dma_buffer) {
         ESP_LOGE(TAG, "DMA buffer not allocated");
         return;
@@ -182,7 +181,6 @@ void lcd_draw_bitmap(int x_start, int y_start, int x_end, int y_end, const void 
         size_t chunk_size = bytes_per_line * chunk_lines;
 
         // 从PSRAM复制到内部DMA缓冲区
-        // 数据已经在WhoFetchNode中转换为大端，这里直接复制
         memcpy(lcd_dma_buffer, src + y * bytes_per_line, chunk_size);
 
         // 传输这个块

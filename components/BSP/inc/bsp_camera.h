@@ -105,6 +105,23 @@ void bsp_camera_frame_free(camera_fb_t *fb);
  */
 void LcdDisplayCameraTaskCreate(void);
 
+/**
+ * @brief Start LCD display task
+ * @return ESP_OK on success
+ */
+esp_err_t bsp_camera_lcd_task_start(void);
+
+/**
+ * @brief Stop LCD display task
+ */
+void bsp_camera_lcd_task_stop(void);
+
+/**
+ * @brief Get LCD display task running status
+ * @return true if running, false if stopped
+ */
+bool bsp_camera_lcd_display_is_running(void);
+
 #ifdef __cplusplus
 }
 #endif
