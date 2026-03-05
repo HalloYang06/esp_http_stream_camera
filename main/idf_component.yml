@@ -3,3 +3,6 @@ dependencies:
   espressif/esp32-camera: ^2.0.0
   lvgl/lvgl: ^9.5.0
   espressif/esp_lcd_touch_ft5x06: ^1.1.0
+  espressif/esp-dl: ^3.2.4
+  espressif/human_face_detect: ^0.3.0
+  espressif/pedestrian_detect: ^0.3.0

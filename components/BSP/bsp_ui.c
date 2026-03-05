@@ -9,6 +9,8 @@
 #include "img_converters.h"
 #include <string.h>
 #include <inttypes.h>
+#include "detection.h"
+#include "esp_cache.h"
 static const char *TAG = "bsp_ui";
 LV_FONT_DECLARE(lv_font_siyuanbold_jibenhanzi_16);
 size_t jpeg_len = 0;
@@ -19,7 +21,7 @@ static lv_obj_t *btn_cancel = NULL;
 static lv_obj_t *label_status = NULL;
 static lv_obj_t *textarea_result = NULL;
 static lv_obj_t *camera_canvas = NULL;  // 使用 canvas 代替 image
-
+static lv_obj_t *btn_detect = NULL;
 // 页面状态
 static bool camera_view_active = false;
 
@@ -28,6 +30,11 @@ static uint8_t *canvas_buffer = NULL;
 
 // 摄像头显示任务句柄
 static TaskHandle_t camera_display_task_handle = NULL;
+//检测相关
+volatile static bool detection_enabled = false;          // 检测功能是否开启
+static detection_type_t current_detection_type = DETECTION_FACE; // 默认人脸检测
+//static void *detector_handle = NULL;            // 当前使用的检测器句柄
+
 
 // API 配置
 #define SERVER_HOST "115.190.73.223"
@@ -630,24 +637,37 @@ static void btn_capture_cb(lv_event_t *e)
     }
 }
 
-// 摄像头显示任务 - 直接使用 esp_camera_fb_get()
+// 摄像头显示任务 
 static void camera_display_task(void *arg)
 {
     ESP_LOGI(TAG, "Camera display task started (Canvas Mode)");
 
     while (camera_view_active) {
-        // 直接获取原始帧，和 bsp_lcd.c 中的方式一样
+        detection_result_t detect_results[10];
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb == NULL) {
             ESP_LOGW(TAG, "Failed to get camera frame");
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
+        
 
         if (canvas_buffer != NULL && camera_canvas != NULL) {
-            // 直接复制数据，不做字节交换（和 bsp_lcd.c 一样）
+            // 直接复制数据到 canvas 缓冲区，避免频繁创建 LVGL 图像对象
             memcpy(canvas_buffer, fb->buf, fb->len);
-
+            esp_err_t ret = esp_cache_msync(canvas_buffer, buffer_size, 
+                                             ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            //如果开启检测
+            if(detection_enabled){
+                int detect_count = bsp_detection_run(current_detection_type,fb,detect_results,10);
+                if (detect_count > 0) {
+                    ESP_LOGI(TAG, "Detection results:");
+                    for (int i = 0; i < detect_count; i++) {
+                        ESP_LOGI(TAG, "  %d: score=%.2f", i, detect_results[i].score);
+                    }
+                    bsp_detection_draw_results((uint16_t*)canvas_buffer,fb->width,fb->height,detect_results,detect_count);
+                }
+            }
             // 通知 LVGL 重绘画布
             bsp_display_lock(0);
             lv_obj_invalidate(camera_canvas);
@@ -664,6 +684,7 @@ static void camera_display_task(void *arg)
     ESP_LOGI(TAG, "Camera display task exiting");
     camera_display_task_handle = NULL;
     vTaskDelete(NULL);
+    
 }
 
 // Start 按钮回调 - 进入摄像头查看模式
@@ -729,6 +750,22 @@ static void btn_start_cb(lv_event_t *e)
         }
     }
 }
+// Detect 按钮回调 - 启动识别
+static void btn_detect_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Detect button clicked - starting detection");
+        if (!detection_enabled){
+            detection_enabled = true;
+            bsp_ui_update_status("Detection STARTED");
+        }else{
+            detection_enabled = false;
+            bsp_ui_update_result("Detection stopped");
+            ESP_LOGI(TAG, "Detection disabled");
+        }
+    }
+}
 
 // Cancel 按钮回调 - 退出摄像头查看模式
 static void btn_cancel_cb(lv_event_t *e)
@@ -739,7 +776,19 @@ static void btn_cancel_cb(lv_event_t *e)
 
         // 停止摄像头显示任务
         camera_view_active = false;
+        while (camera_display_task_handle != NULL){
+            vTaskDelay(pdMS_TO_TICKS(10));
 
+        }
+        if (detection_enabled) {
+            bsp_detection_deinit(current_detection_type);
+            detection_enabled = false;
+            bsp_ui_update_result("Detection stopped");
+        }
+        if (canvas_buffer){
+            free(canvas_buffer);
+            canvas_buffer = NULL;
+        }
         // 等待任务退出
         vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -768,7 +817,9 @@ static void btn_cancel_cb(lv_event_t *e)
 esp_err_t bsp_ui_init(void)
 {
     ESP_LOGI(TAG, "Initializing UI");
-
+    size_t psram_size = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    ESP_LOGI(TAG, "PSRAM total: %d, free: %d", psram_size, psram_free);
     bsp_display_lock(0);
 
     lv_obj_t *screen = lv_screen_active();
@@ -808,11 +859,21 @@ esp_err_t bsp_ui_init(void)
 
     // 创建结果文本框（底部中间，占据大部分宽度）
     textarea_result = lv_textarea_create(screen);
-    lv_obj_set_size(textarea_result, 300, 80);
-    lv_obj_align(textarea_result, LV_ALIGN_BOTTOM_MID, 0, -40);
-    lv_textarea_set_text(textarea_result, "图片的主要内容是一个人的脸部局部 (包含头发和佩戴的眼镜). （）。，人物可能在进行自拍。");
+    lv_obj_set_size(textarea_result, 200, 190);
+    lv_obj_align(textarea_result, LV_ALIGN_BOTTOM_MID, -50, -40);
+    lv_textarea_set_text(textarea_result, "AI result will appear here...");
     lv_textarea_set_one_line(textarea_result, false);
     lv_obj_set_style_text_font(textarea_result, &lv_font_siyuanbold_jibenhanzi_16, 0);
+
+    //创建开启识别的按键
+    btn_detect = lv_button_create(screen);
+    lv_obj_set_size(btn_detect, 100, 40);
+    lv_obj_align(btn_detect, LV_ALIGN_TOP_RIGHT, -10, 110);
+    lv_obj_add_event_cb(btn_detect,  btn_detect_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *label_detect = lv_label_create(btn_detect);
+    lv_label_set_text(label_detect, "Detect");
+    lv_obj_center(label_detect);
 
     // ========== 摄像头查看页面控件 ==========
     // 创建"Cancel"按钮（底部中间，默认隐藏）

@@ -28,12 +28,6 @@ esp_err_t bsp_lvgl_start_tasks(void);
 lv_display_t* bsp_lvgl_get_display(void);
 
 /**
- * @brief 创建摄像头显示任务（使用 LVGL Canvas）
- * @return ESP_OK 成功，ESP_FAIL 失败
- */
-esp_err_t bsp_lvgl_camera_task_create(void);
-
-/**
  * @brief 初始化触摸输入设备
  * @return ESP_OK 成功，ESP_FAIL 失败
  */

@@ -16,6 +16,10 @@ idf_component_register(SRCS
                     mdns
                     BSP
                     lvgl__lvgl
+                    human_detect
+                    esp32-camera
+                    human_face_detect
+                    pedestrian_detect
                     )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-format)

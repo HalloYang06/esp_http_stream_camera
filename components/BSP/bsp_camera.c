@@ -194,51 +194,6 @@ esp_err_t bsp_camera_tasks_init(void)
     ESP_LOGI(TAG, "Camera task system initialized successfully");
     return ESP_OK;
 }
-
-camera_fb_t* bsp_camera_get_frame(TickType_t timeout_ms)
-{
-    if (xSemaphoreTake(g_fb_ready_sem, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
-        return NULL;
-    }
-
-    camera_fb_t *fb_copy = NULL;
-
-    xSemaphoreTake(g_fb_mutex, portMAX_DELAY);
-
-    if (g_latest_fb != NULL) {
-        fb_copy = (camera_fb_t *)malloc(sizeof(camera_fb_t));
-        if (fb_copy != NULL) {
-            memcpy(fb_copy, g_latest_fb, sizeof(camera_fb_t));
-
-            fb_copy->buf = (uint8_t *)malloc(g_latest_fb->len);
-            if (fb_copy->buf != NULL) {
-                memcpy(fb_copy->buf, g_latest_fb->buf, g_latest_fb->len);
-            } else {
-                ESP_LOGE(TAG, "Failed to allocate frame buffer");
-                free(fb_copy);
-                fb_copy = NULL;
-            }
-        } else {
-            ESP_LOGE(TAG, "Failed to allocate frame copy");
-        }
-    }
-
-    xSemaphoreGive(g_fb_mutex);
-
-    return fb_copy;
-}
-
-void bsp_camera_frame_free(camera_fb_t *fb)
-{
-    if (fb != NULL) {
-        if (fb->buf != NULL) {
-            free(fb->buf);
-        }
-        free(fb);
-    }
-}
-
-/****************   LCD Display Task   ***************************************/
 #include "bsp_lcd.h"
 
 static TaskHandle_t lcd_task_handle = NULL;

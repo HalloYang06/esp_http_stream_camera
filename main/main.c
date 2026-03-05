@@ -7,7 +7,7 @@
 #include "bsp_ui.h"
 #include "nvs_flash.h"
 #include "esp_http_client.h"
-
+#include "detection.h"
 void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_INFO);
@@ -91,7 +91,7 @@ void app_main(void)
 
     // 等待一段时间，让硬件稳定
     vTaskDelay(pdMS_TO_TICKS(500));
-
+    
     // 初始化摄像头（RGB565格式）
     ESP_LOGI(TAG, "Initializing camera...");
     ret=bsp_camera_init();
@@ -111,7 +111,13 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "Camera initialized, LCD display controlled by button");
     }
-
+    ESP_LOGI(TAG, "Initializing face detection...");
+    ret = bsp_detection_init(DETECTION_FACE);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Face detection init failed: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Face detection initialized successfully");
+    }
     // 初始化 UI 界面（即使摄像头失败也要显示 UI）
     ret = bsp_ui_init();
     if (ret != ESP_OK) {
