@@ -1,222 +1,291 @@
 # esp_http_stream
 
-`esp_http_stream` 是一个基于 ESP32-S3 和 ESP-IDF 的嵌入式视觉交互项目，融合了无线图传、本地显示、触摸交互、图像抓拍上传、云端分析和本地目标检测等能力。项目既保留了原有的 Web 配网与 HTTP 视频流接口，也扩展了 LCD + LVGL 的本地 UI，适合作为智能摄像头、视觉终端和物联网图像交互设备的基础工程。
+基于 ESP32-S3 和 ESP-IDF 的嵌入式视觉交互终端项目，集成摄像头采集、LCD 本地显示、LVGL 触摸 UI、HTTP MJPEG 图传、Wi-Fi 配网、图片抓拍上传、云端图像分析和本地目标检测能力。
 
-## 项目简介
+这个项目的目标不是单独验证某一个外设，而是打通一条完整的端侧视觉链路：
 
-本项目最初围绕 ESP32 摄像头图传能力展开，后续逐步加入了屏幕显示、触摸操作、图片上传和视觉识别等模块，形成了一个集“采集、显示、传输、交互、识别”于一体的综合示例工程。
+```text
+摄像头采集 -> 本地屏幕预览 -> 触摸交互 -> 抓拍上传 -> 云端分析 -> 结果回显
+                         |
+                         +-> HTTP MJPEG 视频流
+                         |
+                         +-> 本地行人/人脸检测叠框
+```
 
-从功能形态上看，这个项目同时覆盖了两类使用方式：
+## 项目亮点
 
-- 网络访问
-  通过 HTTP / MJPEG 在浏览器或 OpenCV 中查看摄像头画面，并支持配网页面与 mDNS 访问。
-- 本地交互
-  通过 LCD + LVGL + 触摸界面在设备端直接预览图像、启动检测、抓拍上传并查看分析结果。
+- **完整嵌入式视觉链路**：覆盖图像采集、显示、网络传输、上传分析和结果展示。
+- **本地交互界面**：基于 LCD + LVGL + 触摸屏实现 `Start`、`Capture`、`Detect`、`Cancel` 等操作。
+- **网络图传能力**：通过 ESP-IDF HTTP Server 输出 MJPEG 视频流，可被浏览器或 OpenCV 上位机读取。
+- **Wi-Fi 配网与持久化**：支持 STA 连接、AP 配网页面、NVS 保存 Wi-Fi 配置和 mDNS 访问。
+- **端云协同分析**：设备端抓拍并上传 JPEG，云端/局域网服务完成图像理解后将文本结果回显到设备屏幕。
+- **端侧目标检测**：集成行人检测和人脸检测接口，可在 RGB565 framebuffer 上绘制检测框和关键点。
+- **模块化工程结构**：网络、BSP、UI、检测模块拆分清晰，便于后续移植、裁剪和扩展。
 
-## 主要功能
+## 技术栈
 
-- 无线图传
-  基于 HTTP 提供 MJPEG 视频流，可在浏览器中直接访问，也可由 OpenCV 等上位机程序读取。
-- Web 配网
-  支持 AP 模式下的网页配置，用户可通过手机或电脑填写 Wi-Fi 信息完成联网。
-- Wi-Fi 配置持久化
-  通过 NVS 保存网络配置，设备重启后可自动恢复连接。
-- mDNS 访问
-  支持通过 `esp32cam.local` 访问设备，降低记忆 IP 地址的成本。
-- 本地屏幕显示
-  通过 LCD 实时显示摄像头画面，并结合 LVGL 构建本地图形界面。
-- 触摸交互
-  支持触摸按钮操作，提供 `Start`、`Capture`、`Detect`、`Cancel` 等基础交互。
-- 图片抓拍上传
-  可将拍摄到的图像压缩为 JPEG 后上传至外部服务器。
-- 云端图像分析
-  上传图片后可将图片 URL 发送到外部分析服务，并将识别结果回显到界面。
-- 本地视觉检测
-  集成行人检测与人脸检测接口，可在摄像头画面上直接叠加检测框。
-- 模块化工程结构
-  网络、BSP、UI、检测等能力彼此拆分，便于后续扩展和移植。
+| 类型 | 技术/组件 |
+| --- | --- |
+| 主控平台 | ESP32-S3 |
+| 开发框架 | ESP-IDF 5.x |
+| 实时系统 | FreeRTOS |
+| 摄像头 | esp32-camera，DVP，RGB565，QVGA 320x240 |
+| 显示 | SPI LCD，ST7789，RGB565 |
+| GUI | LVGL 9.x |
+| 触摸 | FT5x06 / FT6336 系列触摸芯片 |
+| IO 扩展 | PCA9557 |
+| 网络 | Wi-Fi STA/AP，HTTP Server，HTTP Client，mDNS |
+| 图像处理 | RGB565 转 JPEG，MJPEG stream |
+| AI 能力 | ESP-DL，human_face_detect，pedestrian_detect，外部图像分析服务 |
+| 上位机调试 | Python，OpenCV |
 
 ## 功能架构
 
-项目整体可以分为 4 个核心层次：
+```mermaid
+flowchart TB
+    subgraph Hardware["硬件与 BSP 层"]
+        Camera["摄像头 DVP / RGB565"]
+        LCD["SPI LCD / ST7789"]
+        Touch["FT5x06 触摸"]
+        IO["PCA9557 IO 扩展"]
+        I2C["I2C Bus"]
+    end
 
-1. 采集与板级驱动层
-   由 `components/BSP` 提供摄像头、LCD、触摸、I2C、PCA9557 等硬件驱动支持。
-2. 网络与服务层
-   由 `main/wifi_manager.c`、`config_server.c`、`http_server.c`、`mdns_service.c` 提供联网、配网、图传和服务发现能力。
-3. 本地交互层
-   由 `components/BSP/bsp_ui.c` 和 `bsp_lvgl.c` 构建本地屏幕 UI、预览和触摸交互。
-4. 视觉处理层
-   由 `components/human_detect` 封装人脸检测、行人检测以及结果绘制逻辑。
+    subgraph Runtime["设备运行层"]
+        CameraTask["摄像头采集任务"]
+        LVGL["LVGL UI / Canvas"]
+        HTTPServer["HTTP MJPEG 服务"]
+        WiFi["Wi-Fi 管理 / 配网 / NVS"]
+        Detect["人脸 / 行人检测"]
+    end
 
-## 典型功能流程
+    subgraph Cloud["外部服务与上位机"]
+        Browser["浏览器 / OpenCV 拉流"]
+        Upload["图片上传服务"]
+        AI["图像分析服务"]
+    end
 
-### 1. 无线图传流程
+    Camera --> CameraTask
+    CameraTask --> LVGL
+    CameraTask --> HTTPServer
+    CameraTask --> Detect
+    Detect --> LVGL
+    Touch --> LVGL
+    LCD --> LVGL
+    I2C --> Touch
+    I2C --> IO
+    WiFi --> HTTPServer
+    HTTPServer --> Browser
+    LVGL --> Upload
+    Upload --> AI
+    AI --> LVGL
+```
 
-1. 摄像头采集图像帧。
-2. HTTP 服务输出 MJPEG 视频流。
-3. 用户通过浏览器访问 `/` 或直接读取 `/stream`。
-4. 上位机也可以通过 OpenCV 直接拉流处理。
+## 主要功能
 
-### 2. 本地交互流程
+### 1. 摄像头采集与本地预览
 
-1. 系统初始化 Wi-Fi、LCD、LVGL、触摸与摄像头。
-2. 屏幕显示本地 UI。
-3. 用户通过触摸按钮进入预览、抓拍、检测等功能。
-4. 检测结果或云端分析结果显示在屏幕文本区域中。
+- 配置 ESP32-S3 DVP 摄像头引脚、XCLK、RGB565 像素格式和 QVGA 分辨率。
+- 使用 PSRAM 承载摄像头帧缓冲，降低内部 RAM 压力。
+- 在 LVGL canvas 上显示摄像头画面，并支持本地检测框叠加。
 
-### 3. 抓拍上传与分析流程
+相关代码：
 
-1. 设备抓取当前摄像头帧。
-2. 将图像压缩为 JPEG。
-3. 通过 HTTP multipart/form-data 上传到外部服务器。
-4. 获取图片 URL 后再提交给分析服务。
-5. 将返回文本显示在设备界面上。
+- `components/BSP/bsp_camera.c`
+- `components/BSP/inc/bsp_camera.h`
+- `components/BSP/bsp_ui.c`
 
-## 硬件与环境
+### 2. LCD、触摸与 LVGL UI
 
-根据当前 BSP 和工程配置，项目主要面向以下硬件环境：
+- 初始化 SPI LCD 面板，使用 DMA 缓冲分块刷屏。
+- 初始化 LVGL display、flush 回调、tick 定时器和 UI 任务。
+- 接入 FT5x06 触摸输入，支持设备端按钮交互。
+- 主界面包含状态文本、AI 结果文本框和核心操作按钮。
 
-- 主控芯片：ESP32-S3
-- Flash：16 MB
-- PSRAM：已启用
-- 摄像头：当前按 GC0308 / DVP 接口进行配置
-- 触摸芯片：FT5x06
-- IO 扩展：PCA9557
-- 屏幕：LCD 显示模块
+相关代码：
 
-开发环境建议：
+- `components/BSP/bsp_lcd.c`
+- `components/BSP/bsp_lvgl.c`
+- `components/BSP/bsp_touch.c`
+- `components/BSP/bsp_ui.c`
 
-- ESP-IDF 5.x
-- Python 3.x
-- 已正确安装 ESP-IDF 工具链与驱动
+### 3. Wi-Fi、配网与服务发现
 
-## 依赖组件
+- 支持 STA 模式连接路由器。
+- 支持 AP 模式启动配网页面，保存 SSID/密码到 NVS。
+- 支持扫描附近 Wi-Fi，并通过事件组等待连接成功或失败。
+- 通过 mDNS 注册 `esp32cam.local`，降低调试时查找 IP 的成本。
 
-`main/idf_component.yml` 中声明了以下核心依赖：
+相关代码：
 
-- `espressif/mdns`
-- `espressif/esp32-camera`
-- `lvgl/lvgl`
-- `espressif/esp_lcd_touch_ft5x06`
-- `espressif/esp-dl`
-- `espressif/human_face_detect`
-- `espressif/pedestrian_detect`
+- `main/wifi_manager.c`
+- `main/wifi_config.c`
+- `main/config_server.c`
+- `main/mdns_service.c`
 
-这些依赖共同支撑了图传、UI、触摸和视觉检测能力。
+### 4. HTTP MJPEG 视频流
 
-## HTTP 接口说明
+- 提供浏览器预览首页。
+- 通过 `/stream` 持续输出 MJPEG 视频流。
+- 对非 JPEG 帧执行 `frame2jpg` 压缩后按 multipart chunk 发送。
+- 可通过浏览器、OpenCV 或其他上位机程序接入。
 
-项目保留了原有网络接口，便于继续进行网页图传或上位机接入。
+相关代码：
 
-### 视频流接口
+- `main/http_server.c`
+- `opencv.py`
+- `opencv_viewer.py`
+- `test.py`
+
+### 5. 拍照上传与 AI 图像分析
+
+- 点击 `Capture` 后创建独立 FreeRTOS 任务，避免阻塞 UI。
+- 获取摄像头当前帧，必要时从 RGB565 转换为 JPEG。
+- 使用 HTTP multipart/form-data 上传图片。
+- 获取图片 URL 后提交给图像分析服务。
+- 将返回的文本结果显示到 LVGL 文本框。
+
+相关代码：
+
+- `components/BSP/bsp_ui.c`
+- `api_test.py`
+- `test_api1.py`
+
+### 6. 本地行人/人脸检测
+
+- 封装 `human_face_detect` 与 `pedestrian_detect` 模型能力。
+- 通过 C 接口桥接 C++ 检测对象，方便 C 侧 UI 和摄像头逻辑调用。
+- 支持在 RGB565 framebuffer 上绘制检测框。
+- 人脸检测结果支持关键点绘制。
+
+相关代码：
+
+- `components/human_detect/detection.c`
+- `components/human_detect/middle_human_detect.cpp`
+- `components/human_detect/inc/detection.h`
+
+## HTTP 接口
 
 | 路径 | 方法 | 说明 |
 | --- | --- | --- |
-| `/` | GET | 视频预览主页 |
+| `/` | GET | 工作模式下的视频预览页；配网模式下的 Wi-Fi 配网页面 |
 | `/stream` | GET | MJPEG 视频流 |
-| `/favicon.ico` | GET | 浏览器图标请求占位 |
-
-### 配网接口
-
-| 路径 | 方法 | 说明 |
-| --- | --- | --- |
-| `/` | GET | AP 模式下的配网页面 |
+| `/favicon.ico` | GET | 返回 204，避免浏览器图标请求干扰日志 |
 | `/wifi/save` | POST | 保存 Wi-Fi 配置并重启 |
 
-### mDNS 服务
+## 本地 UI 操作
 
-- 主机名：`esp32cam.local`
-- 访问方式：`http://esp32cam.local/`
+| 按钮 | 功能 |
+| --- | --- |
+| `Start` | 进入摄像头实时预览 |
+| `Capture` | 抓拍当前画面，上传并请求图像分析 |
+| `Detect` | 开启或关闭本地目标检测 |
+| `Cancel` | 退出预览界面并恢复主界面 |
 
-## 本地 UI 功能说明
+## 典型运行流程
 
-当前界面中包含以下主要操作：
+### 本地屏幕交互
 
-- `Start`
-  进入摄像头实时预览界面。
-- `Capture`
-  抓拍当前画面并上传到服务器，再调用分析服务获取文本结果。
-- `Detect`
-  开启或关闭检测功能，可用于行人或人脸检测。
-- `Cancel`
-  退出预览界面，停止检测并恢复主界面控件。
+1. 设备上电并初始化 NVS、Wi-Fi、I2C、PCA9557、LCD、LVGL、触摸和摄像头。
+2. 屏幕显示 LVGL 主界面。
+3. 用户点击 `Start` 进入摄像头预览。
+4. 用户点击 `Detect` 开启检测，检测框叠加到实时画面上。
+5. 用户点击 `Cancel` 退出预览并恢复主界面。
 
-这套本地 UI 让设备即使不依赖浏览器，也能完成图像查看、检测和结果展示。
+### 抓拍上传分析
+
+1. 用户点击 `Capture`。
+2. 设备抓取当前摄像头帧。
+3. 如果不是 JPEG 格式，则执行 JPEG 压缩。
+4. 设备上传图片到外部服务。
+5. 设备将图片 URL 发送给图像分析服务。
+6. 分析结果回显到本地屏幕。
+
+### 浏览器/上位机图传
+
+1. 设备联网后启动 HTTP 服务和 mDNS。
+2. 浏览器访问 `http://esp32cam.local/` 或设备 IP。
+3. 页面通过 `<img src="/stream">` 拉取 MJPEG 视频流。
+4. OpenCV 脚本也可以直接读取 `/stream` 做二次处理。
 
 ## 快速开始
 
-### 1. 编译工程
+### 1. 配置目标芯片
 
 ```bash
 idf.py set-target esp32s3
+```
+
+### 2. 编译
+
+```bash
 idf.py build
 ```
 
-### 2. 烧录并查看日志
+### 3. 烧录并查看日志
 
 ```bash
 idf.py flash monitor
 ```
 
-### 3. 使用方式
+### 4. OpenCV 拉流调试
 
-- 如果走本地交互路径：
-  烧录后可在屏幕上直接查看 UI 并进行触摸操作。
-- 如果走网络图传路径：
-  可通过网页或 OpenCV 访问 HTTP 视频流接口。
+```bash
+python opencv_viewer.py
+```
 
-### 4. OpenCV 调试
+或使用固定 IP 测试：
 
-仓库中提供了以下辅助脚本：
-
-- `opencv.py`
-  使用固定 IP 拉取视频流。
-- `opencv_viewer.py`
-  尝试通过 `esp32cam.local` 查找设备并拉流。
-- `test.py`
-  用于最小化验证 `/stream` 是否可用。
+```bash
+python test.py
+```
 
 ## 目录结构
 
 ```text
 esp_http_stream/
 |-- main/
-|   |-- main.c              # 主入口
-|   |-- wifi_config.c       # Wi-Fi 配置存储
-|   |-- wifi_manager.c      # Wi-Fi 模式管理
+|   |-- main.c              # 系统入口
+|   |-- wifi_config.c       # Wi-Fi 配置 NVS 存储
+|   |-- wifi_manager.c      # Wi-Fi STA/AP 管理与扫描
 |   |-- config_server.c     # Web 配网服务
-|   |-- http_server.c       # HTTP 视频流服务
-|   |-- mdns_service.c      # mDNS 服务
+|   |-- http_server.c       # HTTP MJPEG 视频流服务
+|   |-- mdns_service.c      # mDNS 服务发现
 |-- components/
-|   |-- BSP/                # 摄像头、LCD、触摸、LVGL、UI 等板级驱动
-|   |-- human_detect/       # 人脸/行人检测模块
-|-- managed_components/     # 组件管理器拉取的依赖
-|-- partitions_16mb.csv     # 分区表
-|-- sdkconfig               # 工程配置
-|-- opencv.py               # OpenCV 拉流脚本
-|-- opencv_viewer.py        # 自动发现并拉流脚本
-|-- api_test.py             # 上传接口测试脚本
+|   |-- BSP/                # 摄像头、LCD、触摸、LVGL、UI、I2C、PCA9557
+|   |-- human_detect/       # 人脸/行人检测封装
+|-- managed_components/     # ESP-IDF Component Manager 依赖
+|-- partitions_16mb.csv     # 16 MB Flash 分区表
+|-- partitions_8mb.csv      # 8 MB Flash 分区表
+|-- opencv.py               # 固定 IP 拉流脚本
+|-- opencv_viewer.py        # mDNS 自动发现并拉流
+|-- api_test.py             # 图片上传接口测试
 |-- test_api1.py            # 上传与分析联调脚本
+|-- interview_demo_overview.html # 面试演示项目说明文档
 `-- README.md
 ```
 
-## 项目特点
+## 面试展示建议
 
-- 兼顾网络图传与本地屏幕交互两种使用模式
-- 既能作为 Demo，也适合作为后续产品原型开发基础
-- 具备视觉采集、检测、上传、分析的完整链路
-- 工程分层清晰，便于后续裁剪、扩展和移植
+仓库中提供了 `interview_demo_overview.html`，可以直接用浏览器打开作为面试演示说明文档。它包含项目功能、模块划分、关键函数、HTTP 接口和演示流程。
 
-## 可扩展方向
+建议面试时重点介绍：
 
-- 增加更多视觉模型与检测目标
-- 支持录像、抓图存储与历史记录
-- 增强 Web 页面交互能力
-- 引入 OTA 升级
-- 将服务器地址、Wi-Fi、检测参数做成可配置项
-- 支持更多屏幕和摄像头模组
+- 为什么选择 ESP32-S3 作为视觉终端主控。
+- 摄像头、LCD、LVGL、Wi-Fi、HTTP 和 AI 分析之间的数据流。
+- PSRAM 和内部 DMA 内存的使用取舍。
+- FreeRTOS 任务如何拆分 UI、采集、显示、上传和检测。
+- 端侧检测和云端图像理解各自承担什么职责。
 
-## 许可证
+## 后续扩展方向
 
-本项目使用 MIT License，详见 `LICENSE`。
+- 增加 OTA 升级能力。
+- 将服务器地址、检测类型、阈值等参数做成可配置项。
+- 增加 SD/FATFS 本地图片保存和历史记录。
+- 增强 Web 控制台，支持浏览器端抓拍、检测开关和状态查看。
+- 增加帧率、内存占用、上传耗时和检测耗时统计。
+- 支持更多摄像头和屏幕模组。
+
+## License
+
+本项目使用 MIT License，详见 [LICENSE](LICENSE)。

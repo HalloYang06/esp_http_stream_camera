@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32-S3 视觉交互项目面试演示文档</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #15202b;
+      --muted: #5b6673;
+      --line: #d9e1e8;
+      --soft: #f5f8fb;
+      --accent: #117a65;
+      --accent-2: #1f5f99;
+      --warn: #a85d12;
+      --danger: #a33a3a;
+      --ok-bg: #eaf7f2;
+      --info-bg: #edf4fb;
+      --warn-bg: #fff6e8;
+      --danger-bg: #fff0f0;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif;
+      color: var(--ink);
+      background: #ffffff;
+      line-height: 1.65;
+    }
+
+    header {
+      padding: 48px 24px 28px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #f7fbff 0%, #ffffff 100%);
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 28px 24px 56px;
+    }
+
+    h1 {
+      max-width: 1120px;
+      margin: 0 auto 14px;
+      font-size: clamp(30px, 5vw, 48px);
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      max-width: 1120px;
+      margin: 0 auto;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .meta {
+      max-width: 1120px;
+      margin: 20px auto 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 12px;
+      background: #ffffff;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    section {
+      padding: 24px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 24px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 22px 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 8px 0;
+    }
+
+    code {
+      font-family: Consolas, "SFMono-Regular", Menlo, monospace;
+      background: #eef3f7;
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: #16324f;
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: #ffffff;
+    }
+
+    .item h3 {
+      margin-top: 0;
+    }
+
+    .item p:last-child {
+      margin-bottom: 0;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent-2);
+      padding: 12px 14px;
+      margin: 14px 0;
+      background: var(--info-bg);
+      border-radius: 6px;
+    }
+
+    .callout.ok {
+      border-left-color: var(--accent);
+      background: var(--ok-bg);
+    }
+
+    .callout.warn {
+      border-left-color: var(--warn);
+      background: var(--warn-bg);
+    }
+
+    .callout.danger {
+      border-left-color: var(--danger);
+      background: var(--danger-bg);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      padding: 10px 12px;
+    }
+
+    th {
+      background: var(--soft);
+      font-weight: 700;
+    }
+
+    ul,
+    ol {
+      padding-left: 22px;
+      margin: 8px 0;
+    }
+
+    li {
+      margin: 5px 0;
+    }
+
+    .flow {
+      counter-reset: step;
+      display: grid;
+      gap: 10px;
+    }
+
+    .flow div {
+      counter-increment: step;
+      position: relative;
+      padding: 12px 14px 12px 48px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .flow div::before {
+      content: counter(step);
+      position: absolute;
+      left: 14px;
+      top: 12px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #ffffff;
+      text-align: center;
+      line-height: 24px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .tag {
+      display: inline-block;
+      margin: 2px 4px 2px 0;
+      padding: 2px 7px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 820px) {
+      .grid.two,
+      .grid.three {
+        grid-template-columns: 1fr;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ESP32-S3 视觉交互终端项目</h1>
+    <p class="subtitle">面向面试演示的项目梳理：摄像头采集、LCD/LVGL 本地交互、HTTP 图传、Wi-Fi 配网、拍照上传、AI 图像分析与本地目标检测。</p>
+    <div class="meta">
+      <span class="pill">工程目录：F:\ESP32project\esp_http_stream</span>
+      <span class="pill">平台：ESP32-S3 + ESP-IDF</span>
+      <span class="pill">显示：320x240 LCD + LVGL</span>
+      <span class="pill">摄像头：DVP / RGB565 / QVGA</span>
+      <span class="pill">检测：人脸 / 行人</span>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>一句话介绍</h2>
+      <div class="callout ok">
+        这是一个基于 ESP32-S3 的嵌入式视觉交互原型：设备端完成摄像头采集和本地屏幕预览，通过触摸 UI 触发拍照、上传和 AI 分析，同时保留 HTTP MJPEG 视频流、mDNS 发现、Wi-Fi 配网和本地行人/人脸检测能力。
+      </div>
+      <p>面试时可以把它讲成“从硬件采集到网络服务再到 AI 识别的完整链路”，亮点是你不只做了单点功能，而是把摄像头、显示、触摸、联网、云端接口和端侧检测整合在一个 ESP-IDF 工程里。</p>
+    </section>
+
+    <section>
+      <h2>当前入口状态</h2>
+      <div class="callout warn">
+        <strong>注意：</strong><code>main/main.c</code> 当前真正执行的代码主要是 NVS 初始化、写入编译期 Wi-Fi 账号、以 STA 模式联网。LCD、LVGL、触摸、摄像头、检测、mDNS 和 HTTP 服务初始化链路目前保留在一个大注释块中。
+      </div>
+      <p>因此明天演示时建议准备两种说法：</p>
+      <ul>
+        <li><strong>代码能力展示：</strong>按模块讲清楚已经写好的功能和调用链。</li>
+        <li><strong>现场运行展示：</strong>如果要现场跑完整 UI/图传，需要先恢复注释块中的初始化链路，并确认摄像头共享帧接口实现完整。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>核心功能清单</h2>
+      <div class="grid three">
+        <div class="item">
+          <h3>Wi-Fi 联网与配网</h3>
+          <p>支持 STA 连接、AP 配网模式、扫描附近 Wi-Fi、NVS 保存账号密码、失败重试与事件组等待连接结果。</p>
+          <span class="tag">main/wifi_manager.c</span>
+          <span class="tag">main/wifi_config.c</span>
+          <span class="tag">main/config_server.c</span>
+        </div>
+        <div class="item">
+          <h3>HTTP 视频流</h3>
+          <p>提供 Web 首页和 <code>/stream</code> MJPEG 流接口，把摄像头帧转成 JPEG chunk 持续推送给浏览器或 OpenCV。</p>
+          <span class="tag">main/http_server.c</span>
+          <span class="tag">opencv_viewer.py</span>
+        </div>
+        <div class="item">
+          <h3>mDNS 设备发现</h3>
+          <p>注册 <code>esp32cam.local</code>，并声明 HTTP 服务与 <code>/stream</code> 路径，降低演示时查 IP 的成本。</p>
+          <span class="tag">main/mdns_service.c</span>
+        </div>
+        <div class="item">
+          <h3>LCD 显示驱动</h3>
+          <p>基于 SPI 和 ST7789 面板驱动初始化 LCD，使用 DMA 内存分块刷屏，并提供背光 PWM 控制。</p>
+          <span class="tag">components/BSP/bsp_lcd.c</span>
+        </div>
+        <div class="item">
+          <h3>LVGL 本地 UI</h3>
+          <p>初始化 LVGL 显示、tick 定时器、渲染任务和触摸输入，主界面包含 Capture、Start、Detect、Cancel、状态栏和结果文本框。</p>
+          <span class="tag">components/BSP/bsp_lvgl.c</span>
+          <span class="tag">components/BSP/bsp_ui.c</span>
+        </div>
+        <div class="item">
+          <h3>摄像头采集</h3>
+          <p>配置 DVP 引脚、XCLK、RGB565、QVGA、PSRAM frame buffer，并通过 PCA9557 控制摄像头上电。</p>
+          <span class="tag">components/BSP/bsp_camera.c</span>
+          <span class="tag">components/BSP/inc/bsp_camera.h</span>
+        </div>
+        <div class="item">
+          <h3>拍照上传</h3>
+          <p>点击 Capture 后抓取当前帧，必要时 RGB565 转 JPEG，再用 multipart/form-data 上传到外部图片服务器。</p>
+          <span class="tag">components/BSP/bsp_ui.c</span>
+          <span class="tag">api_test.py</span>
+        </div>
+        <div class="item">
+          <h3>云端 AI 分析</h3>
+          <p>上传成功后拿到图片 URL，发送给 Python GLM 分析服务，解析 JSON 结果并回显到 LVGL 文本区域。</p>
+          <span class="tag">send_url_to_glm_server</span>
+          <span class="tag">bsp_ui_update_result</span>
+        </div>
+        <div class="item">
+          <h3>本地目标检测</h3>
+          <p>封装人脸检测和行人检测模型，支持在预览帧上绘制检测框、置信度区分颜色和人脸关键点。</p>
+          <span class="tag">components/human_detect</span>
+          <span class="tag">esp-dl</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>工程结构</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>路径</th>
+            <th>作用</th>
+            <th>面试讲法</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>main/main.c</code></td>
+            <td>系统入口，负责 NVS、Wi-Fi 和后续外设/服务初始化顺序。</td>
+            <td>强调嵌入式项目启动链路：存储、联网、外设、UI、服务。</td>
+          </tr>
+          <tr>
+            <td><code>main/network.h</code></td>
+            <td>网络模块统一头文件，并保留旧接口到新模块的兼容映射。</td>
+            <td>体现模块化重构时对旧代码调用点的兼容。</td>
+          </tr>
+          <tr>
+            <td><code>main/wifi_manager.c</code></td>
+            <td>Wi-Fi STA/AP 初始化、事件处理、扫描、重试和配网入口。</td>
+            <td>可以讲 FreeRTOS event group 如何等待联网成功或失败。</td>
+          </tr>
+          <tr>
+            <td><code>main/config_server.c</code></td>
+            <td>AP 模式下提供网页配网，提交 SSID/密码后写 NVS 并重启。</td>
+            <td>展示设备首次使用时的用户体验闭环。</td>
+          </tr>
+          <tr>
+            <td><code>main/http_server.c</code></td>
+            <td>浏览器首页、MJPEG 流、favicon 空响应。</td>
+            <td>讲 HTTP chunk、MJPEG boundary 和 RGB565 转 JPEG。</td>
+          </tr>
+          <tr>
+            <td><code>components/BSP/</code></td>
+            <td>板级支持包：I2C、PCA9557、LCD、触摸、摄像头、LVGL、UI。</td>
+            <td>说明硬件相关代码和业务代码拆分，便于移植。</td>
+          </tr>
+          <tr>
+            <td><code>components/human_detect/</code></td>
+            <td>C 接口包装 C++ 检测模型，屏蔽上层对模型类的依赖。</td>
+            <td>体现 C/C++ 混合工程和模型推理封装。</td>
+          </tr>
+          <tr>
+            <td><code>opencv_viewer.py</code> / <code>test.py</code></td>
+            <td>PC 端拉流调试脚本。</td>
+            <td>演示不仅能在设备屏幕看，也能被上位机处理。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>主要代码功能列表</h2>
+      <h3>入口与网络</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>函数</th>
+            <th>文件</th>
+            <th>功能</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>app_main</code></td><td><code>main/main.c</code></td><td>ESP-IDF 主入口；初始化 NVS，保存并连接 Wi-Fi；注释块中包含完整外设和服务启动顺序。</td></tr>
+          <tr><td><code>wifi_manager_init</code></td><td><code>main/wifi_manager.c</code></td><td>按 STA/AP 模式初始化网络，注册事件，配置 Wi-Fi 并等待连接结果。</td></tr>
+          <tr><td><code>wifi_manager_scan</code></td><td><code>main/wifi_manager.c</code></td><td>主动扫描附近 AP，返回 SSID、RSSI 和认证方式。</td></tr>
+          <tr><td><code>wifi_config_save/load/clear</code></td><td><code>main/wifi_config.c</code></td><td>用 NVS 持久化 Wi-Fi 配置。</td></tr>
+          <tr><td><code>config_server_start</code></td><td><code>main/config_server.c</code></td><td>启动 AP 配网页面和 <code>/wifi/save</code> 提交接口。</td></tr>
+          <tr><td><code>http_server_start</code></td><td><code>main/http_server.c</code></td><td>启动 80 端口 HTTP 服务并注册首页、视频流和 favicon 路由。</td></tr>
+          <tr><td><code>mdns_service_start</code></td><td><code>main/mdns_service.c</code></td><td>注册 <code>esp32cam.local</code> 和 HTTP 服务发现信息。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>硬件 BSP 与 UI</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>函数</th>
+            <th>文件</th>
+            <th>功能</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>bsp_i2c_bus_init</code></td><td><code>components/BSP/bsp_i2cbus.c</code></td><td>初始化 I2C master bus，供 PCA9557、触摸和摄像头 SCCB 使用。</td></tr>
+          <tr><td><code>pca9557_dev_init</code> / <code>pca9557_set_pin</code></td><td><code>components/BSP/bsp_pca9557.c</code></td><td>添加 IO 扩展芯片，并控制 LCD CS、摄像头 PWDN 等扩展引脚。</td></tr>
+          <tr><td><code>lcd_init</code> / <code>lcd_draw_bitmap</code></td><td><code>components/BSP/bsp_lcd.c</code></td><td>初始化 ST7789 LCD，使用 DMA 缓冲分块写入图像。</td></tr>
+          <tr><td><code>bsp_lvgl_init</code> / <code>bsp_lvgl_start_tasks</code></td><td><code>components/BSP/bsp_lvgl.c</code></td><td>初始化 LVGL 显示驱动、双缓冲、flush 回调、tick 定时器和渲染任务。</td></tr>
+          <tr><td><code>bsp_lvgl_touch_init</code></td><td><code>components/BSP/bsp_lvgl.c</code></td><td>将 FT5x06 触摸屏接入 LVGL pointer 输入设备。</td></tr>
+          <tr><td><code>bsp_ui_init</code></td><td><code>components/BSP/bsp_ui.c</code></td><td>创建主界面按钮、状态标签、AI 结果文本框和预览页取消按钮。</td></tr>
+          <tr><td><code>bsp_ui_update_result/status</code></td><td><code>components/BSP/bsp_ui.c</code></td><td>线程安全地更新识别结果和状态文本。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>摄像头、上传与检测</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>函数</th>
+            <th>文件</th>
+            <th>功能</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>bsp_camera_init</code></td><td><code>components/BSP/bsp_camera.c</code></td><td>配置摄像头引脚、XCLK、RGB565、QVGA、PSRAM 帧缓冲并初始化 esp32-camera。</td></tr>
+          <tr><td><code>bsp_camera_tasks_init</code></td><td><code>components/BSP/bsp_camera.c</code></td><td>创建后台采集任务，把最新帧放到共享缓冲设计中。</td></tr>
+          <tr><td><code>camera_display_task</code></td><td><code>components/BSP/bsp_ui.c</code></td><td>循环获取摄像头帧，复制到 LVGL canvas；检测开启时叠加检测框。</td></tr>
+          <tr><td><code>capture_and_upload_task</code></td><td><code>components/BSP/bsp_ui.c</code></td><td>拍照、压缩、上传、调用 AI 分析并更新 UI。</td></tr>
+          <tr><td><code>upload_image_to_server</code></td><td><code>components/BSP/bsp_ui.c</code></td><td>手动组装 multipart/form-data，把 JPEG 发到图片服务器并解析返回 URL。</td></tr>
+          <tr><td><code>send_url_to_glm_server</code></td><td><code>components/BSP/bsp_ui.c</code></td><td>把图片 URL 发给本地/局域网 GLM 分析服务，解析 <code>success/result</code> JSON。</td></tr>
+          <tr><td><code>bsp_detection_init/run/deinit</code></td><td><code>components/human_detect/detection.c</code></td><td>创建检测模型、执行 RGB565 图像推理并释放模型。</td></tr>
+          <tr><td><code>bsp_detection_draw_results</code></td><td><code>components/human_detect/detection.c</code></td><td>在 RGB565 framebuffer 上画检测框和人脸关键点。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>HTTP 与调试接口</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>接口</th>
+            <th>方法</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>/</code></td><td>GET</td><td>工作模式下显示 ESP32-CAM Live Stream 页面；AP 配网模式下显示 Wi-Fi 配网页面。</td></tr>
+          <tr><td><code>/stream</code></td><td>GET</td><td>MJPEG 视频流，浏览器和 OpenCV 都可读取。</td></tr>
+          <tr><td><code>/favicon.ico</code></td><td>GET</td><td>返回 204，避免浏览器 favicon 请求干扰日志。</td></tr>
+          <tr><td><code>/wifi/save</code></td><td>POST</td><td>保存 Wi-Fi SSID/密码到 NVS，随后重启进入 STA 连接流程。</td></tr>
+          <tr><td><code>/xiaozhi/admin/images</code></td><td>POST</td><td>外部图片上传接口，设备端以 multipart/form-data 上传 JPEG。</td></tr>
+          <tr><td><code>/analyze</code></td><td>POST</td><td>Python GLM 分析服务接口，输入图片 URL，返回文本识别结果。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>典型演示流程</h2>
+      <h3>设备端 UI 演示</h3>
+      <div class="flow">
+        <div>设备上电，初始化 NVS、Wi-Fi、I2C、PCA9557、LCD、LVGL、触摸和摄像头。</div>
+        <div>进入 LVGL 主界面，看到 Capture、Start、Detect 按钮和结果文本区。</div>
+        <div>点击 Start 进入摄像头预览，LVGL canvas 显示 QVGA 图像。</div>
+        <div>点击 Detect 切换本地检测，检测结果以矩形框叠加到预览帧上。</div>
+        <div>点击 Cancel 退出预览，释放 canvas 缓冲并恢复主界面控件。</div>
+      </div>
+
+      <h3>拍照上传与 AI 分析演示</h3>
+      <div class="flow">
+        <div>点击 Capture 创建独立 FreeRTOS 任务，避免阻塞 UI。</div>
+        <div>任务检查 Wi-Fi 状态，抓取摄像头当前帧。</div>
+        <div>若帧格式不是 JPEG，则通过 <code>frame2jpg</code> 压缩。</div>
+        <div>用 HTTP multipart/form-data 上传图片，解析返回的图片 URL。</div>
+        <div>把 URL 发给 GLM 分析服务，把识别文本显示到 LVGL 文本框。</div>
+      </div>
+
+      <h3>网页图传演示</h3>
+      <div class="flow">
+        <div>mDNS 注册 <code>esp32cam.local</code>，或者通过串口日志查看 IP。</div>
+        <div>浏览器打开 <code>http://esp32cam.local/</code> 或设备 IP。</div>
+        <div>页面中的 <code>&lt;img src="/stream"&gt;</code> 自动拉取 MJPEG 流。</div>
+        <div>也可以运行 <code>opencv_viewer.py</code> 在 PC 端显示并处理视频流。</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>依赖与硬件配置</h2>
+      <div class="grid two">
+        <div class="item">
+          <h3>ESP-IDF 组件依赖</h3>
+          <ul>
+            <li><code>espressif/mdns</code>：局域网服务发现。</li>
+            <li><code>espressif/esp32-camera</code>：摄像头采集。</li>
+            <li><code>lvgl/lvgl</code>：本地图形界面。</li>
+            <li><code>espressif/esp_lcd_touch_ft5x06</code>：触摸屏。</li>
+            <li><code>espressif/esp-dl</code>：端侧模型推理基础。</li>
+            <li><code>human_face_detect</code> / <code>pedestrian_detect</code>：人脸与行人检测。</li>
+          </ul>
+        </div>
+        <div class="item">
+          <h3>关键硬件参数</h3>
+          <ul>
+            <li>主控：ESP32-S3。</li>
+            <li>摄像头：DVP，RGB565，QVGA 320x240，XCLK 24 MHz。</li>
+            <li>显示：SPI LCD，ST7789 驱动，RGB565。</li>
+            <li>触摸：FT5x06 系列 I2C 触摸芯片。</li>
+            <li>扩展 IO：PCA9557，控制 LCD CS、DVP PWDN 等信号。</li>
+            <li>内存：摄像头帧和 canvas 主要使用 PSRAM，LCD DMA 使用内部 RAM。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>面试讲解重点</h2>
+      <div class="grid two">
+        <div class="item">
+          <h3>可以重点展开的技术点</h3>
+          <ul>
+            <li>ESP-IDF 组件化：<code>main</code>、<code>BSP</code>、<code>human_detect</code> 分层。</li>
+            <li>FreeRTOS 任务拆分：UI、摄像头采集、LCD 刷新、拍照上传分开跑。</li>
+            <li>内存取舍：PSRAM 放大缓冲，内部 DMA 内存用于 LCD SPI 传输。</li>
+            <li>HTTP MJPEG：用 multipart boundary 连续推 JPEG 帧。</li>
+            <li>端云协同：ESP32 负责采集和上传，外部服务负责大模型图像理解。</li>
+            <li>端侧 AI：使用 ESP-DL 相关组件做行人/人脸检测。</li>
+          </ul>
+        </div>
+        <div class="item">
+          <h3>可以主动说明的工程思考</h3>
+          <ul>
+            <li>把硬件驱动放进 BSP，后续换屏或换摄像头时影响范围更小。</li>
+            <li>网络接口保留旧函数兼容层，说明你考虑过重构成本。</li>
+            <li>上传和分析采用独立任务，避免 UI 卡死。</li>
+            <li>HTTP 响应缓冲按请求独立分配，降低并发请求互相污染风险。</li>
+            <li>检测框直接画到 framebuffer，减少额外 UI 对象开销。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>演示前检查清单</h2>
+      <div class="callout danger">
+        <strong>敏感信息：</strong>源码中存在硬编码 Wi-Fi 密码、服务器地址和 API Key。面试投屏前建议脱敏，或准备一个专门的演示分支。
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>检查项</th>
+            <th>原因</th>
+            <th>建议</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>main.c</code> 初始化链路是否启用</td>
+            <td>当前完整外设和服务初始化被注释。</td>
+            <td>若要现场跑完整功能，需要恢复并验证初始化顺序。</td>
+          </tr>
+          <tr>
+            <td><code>bsp_camera_get_frame</code> / <code>bsp_camera_frame_free</code></td>
+            <td>头文件声明且 HTTP/LCD 调用，但当前源码检索未发现实现。</td>
+            <td>演示前补齐实现，或改为直接使用 <code>esp_camera_fb_get/return</code> 的路径。</td>
+          </tr>
+          <tr>
+            <td>检测桥接类型区分</td>
+            <td><code>void*</code> 桥接 C++ 检测器时，模型类型需要可靠区分。</td>
+            <td>可把 detector 结构体加上类型字段，避免错误 cast。</td>
+          </tr>
+          <tr>
+            <td>触摸初始化</td>
+            <td><code>bsp_touch_init</code> 中创建 FT5x06 句柄的调用出现两次。</td>
+            <td>保留一次即可，避免重复初始化带来不确定行为。</td>
+          </tr>
+          <tr>
+            <td>服务器可达性</td>
+            <td>上传服务器和 GLM 分析服务依赖固定 IP。</td>
+            <td>面试前确认同一网络下 IP、端口和防火墙可用。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>推荐 2 分钟口述稿</h2>
+      <p>“这个项目是我基于 ESP32-S3 做的一个视觉交互终端。最底层我写了 BSP，负责 I2C、PCA9557、LCD、触摸和摄像头初始化；中间层是 Wi-Fi、HTTP、mDNS 和配网服务；上层是 LVGL 本地 UI，用户可以在屏幕上预览摄像头画面、拍照上传、触发 AI 分析，也可以打开本地检测，在画面上叠加人脸或行人检测框。”</p>
+      <p>“我比较关注嵌入式里的资源约束，所以摄像头帧、canvas 这类大内存放 PSRAM，LCD DMA 传输用内部 RAM 分块；网络上传和 AI 分析放到单独任务里，避免阻塞 UI。这个工程的价值在于它打通了采集、显示、传输、识别和交互的完整链路，不只是单独驱动一个外设。”</p>
+    </section>
+
+    <section>
+      <h2>后续可扩展方向</h2>
+      <ul>
+        <li>把 Wi-Fi、服务器地址、分析接口和检测类型做成可配置项。</li>
+        <li>增加 OTA 升级，方便远程更新模型和业务逻辑。</li>
+        <li>增加 SD/FATFS 图片保存与历史记录页面。</li>
+        <li>完善 Web 控制台，在浏览器端切换检测、抓拍和查看状态。</li>
+        <li>把云端分析从局域网 Python 服务升级为稳定后端服务。</li>
+        <li>增加模型选择、阈值设置和帧率统计，增强演示可视化。</li>
+      </ul>
+      <p class="small">生成时间：2026-05-23。本文件基于当前工作区源码静态分析生成。</p>
+    </section>
+  </main>
+</body>
+</html>
