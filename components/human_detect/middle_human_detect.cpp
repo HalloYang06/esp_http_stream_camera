@@ -36,7 +36,7 @@
      }
  }
 
- int run_detection(void *detector, uint8_t *img_data, int width, int height,
+ int run_detection(detection_type_t type, void *detector, uint8_t *img_data, int width, int height,
                    detection_result_t *results, int max_results)
  {
      if (!detector || !img_data || !results) {
@@ -57,14 +57,17 @@
 
          // 尝试作为人脸检测器
          HumanFaceDetect *face_det = static_cast<HumanFaceDetect*>(detector);
-         if (face_det) {
+         if (type == DETECTION_FACE) {
              detect_results = &(face_det->run(img));
-         } else {
+         } else if (type == DETECTION_PEDESTRIAN) {
              // 尝试作为行人检测器
              PedestrianDetect *ped_det = static_cast<PedestrianDetect*>(detector);
              if (ped_det) {
                  detect_results = &(ped_det->run(img));
              }
+         } else {
+             ESP_LOGE(TAG, "Unknown detection type: %d", type);
+             return 0;
          }
 
          if (!detect_results) {
@@ -111,22 +114,24 @@
      }
  }
 
- void destroy_detector(void *detector)
+ void destroy_detector(detection_type_t type, void *detector)
  {
      if (detector) {
          try {
              // 尝试删除人脸检测器
              HumanFaceDetect *face_det = static_cast<HumanFaceDetect*>(detector);
-             if (face_det) {
+             if (type == DETECTION_FACE) {
                  delete face_det;
                  return;
              }
 
              // 尝试删除行人检测器
              PedestrianDetect *ped_det = static_cast<PedestrianDetect*>(detector);
-             if (ped_det) {
+             if (type == DETECTION_PEDESTRIAN) {
                  delete ped_det;
+                 return;
              }
+             ESP_LOGE(TAG, "Unknown detector type during destroy: %d", type);
          } catch (...) {
              ESP_LOGE(TAG, "Exception destroying detector");
          }

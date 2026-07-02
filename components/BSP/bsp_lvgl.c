@@ -60,11 +60,11 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
     int x2 = area->x2 + 1;
     int y2 = area->y2 + 1;
 
-    
     lcd_draw_bitmap(x1, y1, x2, y2, px_map);
 
     bsp_display_unlock();
-
+    //确保LCD传输完成
+    vTaskDelay(pdMS_TO_TICKS(1));
     lv_display_flush_ready(disp);
 
     flush_count++;

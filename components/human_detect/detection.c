@@ -11,9 +11,9 @@
  // C++ 接口桥接函数（在 .cpp 文件中实现）
  extern void* create_face_detector(void);
  extern void* create_pedestrian_detector(void);
- extern int run_detection(void *detector, uint8_t *img_data, int width, int height,
+ extern int run_detection(detection_type_t type, void *detector, uint8_t *img_data, int width, int height,
                           detection_result_t *results, int max_results);
- extern void destroy_detector(void *detector);
+ extern void destroy_detector(detection_type_t type, void *detector);
 static SemaphoreHandle_t det_mutex = NULL;
  esp_err_t bsp_detection_init(detection_type_t type)
  {
@@ -31,6 +31,7 @@ static SemaphoreHandle_t det_mutex = NULL;
              g_face_detector = create_face_detector();
              if (g_face_detector == NULL) {
                  ESP_LOGE(TAG, "Failed to create face detector");
+                 xSemaphoreGive(det_mutex);
                  return ESP_FAIL;
              }
          }
@@ -39,9 +40,14 @@ static SemaphoreHandle_t det_mutex = NULL;
              g_pedestrian_detector = create_pedestrian_detector();
              if (g_pedestrian_detector == NULL) {
                  ESP_LOGE(TAG, "Failed to create pedestrian detector");
+                 xSemaphoreGive(det_mutex);
                  return ESP_FAIL;
              }
          }
+     } else {
+         ESP_LOGE(TAG, "Unknown detector type: %d", type);
+         xSemaphoreGive(det_mutex);
+         return ESP_ERR_INVALID_ARG;
      }
      xSemaphoreGive(det_mutex);
      ESP_LOGI(TAG, "Detector initialized successfully");
@@ -55,21 +61,36 @@ static SemaphoreHandle_t det_mutex = NULL;
          ESP_LOGE(TAG, "Invalid parameters");
          return 0;
      }
-
+     if (det_mutex == NULL) {
+         ESP_LOGE(TAG, "Mutex not initialized");
+         return 0;
+     }
+     xSemaphoreTake(det_mutex,portMAX_DELAY);
      // 确保图像格式为 RGB565
      if (fb->format != PIXFORMAT_RGB565) {
-         ESP_LOGE(TAG, "Unsupported pixel format: %d (need RGB565)", fb->format);
+        ESP_LOGE(TAG, "Unsupported pixel format: %d (need RGB565)", fb->format);
+        xSemaphoreGive(det_mutex);
          return 0;
      }
 
-     void *detector = (type == DETECTION_FACE) ? g_face_detector : g_pedestrian_detector;
+     void *detector = NULL;
+     if (type == DETECTION_FACE) {
+         detector = g_face_detector;
+     } else if (type == DETECTION_PEDESTRIAN) {
+         detector = g_pedestrian_detector;
+     } else {
+        ESP_LOGE(TAG, "Unknown detector type: %d", type);
+        xSemaphoreGive(det_mutex);
+        return 0;
+     }
      if (detector == NULL) {
-         ESP_LOGE(TAG, "Detector not initialized");
+        ESP_LOGE(TAG, "Detector not initialized");
+        xSemaphoreGive(det_mutex);
          return 0;
      }
 
      // 执行检测
-     int count = run_detection(detector, fb->buf, fb->width, fb->height,
+     int count = run_detection(type, detector, fb->buf, fb->width, fb->height,
                               results, max_results);
 
      if (count > 0) {
@@ -80,19 +101,26 @@ static SemaphoreHandle_t det_mutex = NULL;
                       results[i].box.w, results[i].box.h, results[i].score);
          }
      }
-
+     xSemaphoreGive(det_mutex);
      return count;
  }
 
  void bsp_detection_deinit(detection_type_t type)
  {
+     if (det_mutex == NULL) {
+         return;
+     }
+     xSemaphoreTake(det_mutex, portMAX_DELAY);
      if (type == DETECTION_FACE && g_face_detector != NULL) {
-         destroy_detector(g_face_detector);
+         destroy_detector(type, g_face_detector);
          g_face_detector = NULL;
      } else if (type == DETECTION_PEDESTRIAN && g_pedestrian_detector != NULL) {
-         destroy_detector(g_pedestrian_detector);
+         destroy_detector(type, g_pedestrian_detector);
          g_pedestrian_detector = NULL;
+     } else if (type != DETECTION_FACE && type != DETECTION_PEDESTRIAN) {
+         ESP_LOGE(TAG, "Unknown detector type during deinit: %d", type);
      }
+     xSemaphoreGive(det_mutex);
  }
 
  void bsp_detection_draw_results(uint16_t *framebuffer, int width, int height,

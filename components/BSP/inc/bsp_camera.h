@@ -55,7 +55,7 @@ extern "C" {
 #define BSP_CAMERA_PIXEL_FORMAT     PIXFORMAT_RGB565
 #define BSP_CAMERA_FRAME_SIZE       FRAMESIZE_QVGA    // 320x240
 #define BSP_CAMERA_JPEG_QUALITY     12
-#define BSP_CAMERA_FB_COUNT         6
+#define BSP_CAMERA_FB_COUNT         4
 #define BSP_CAMERA_FB_LOCATION      CAMERA_FB_IN_PSRAM
 #define BSP_CAMERA_GRAB_MODE        CAMERA_GRAB_WHEN_EMPTY
 
@@ -70,6 +70,9 @@ extern "C" {
  */
 esp_err_t bsp_camera_init(void);
 
+esp_err_t bsp_camera_lock(uint32_t timeout_ms);
+void bsp_camera_unlock(void);
+
 /**
  * @brief Capture a single frame (blocking)
  * @note For advanced usage, consider using bsp_camera_tasks_init() instead
@@ -81,24 +84,9 @@ esp_err_t bsp_camera_capture(void);
 /**
  * @brief Initialize camera capture task system
  * @note Creates a background task that continuously captures frames
- *       Use bsp_camera_get_frame() to retrieve the latest frame
  * @return ESP_OK on success
  */
 esp_err_t bsp_camera_tasks_init(void);
-
-/**
- * @brief Get the latest captured frame
- * @param timeout_ms Maximum time to wait for a new frame (milliseconds)
- * @return Pointer to frame copy (must be freed with bsp_camera_frame_free())
- *         Returns NULL on timeout or error
- */
-camera_fb_t* bsp_camera_get_frame(TickType_t timeout_ms);
-
-/**
- * @brief Free a frame obtained from bsp_camera_get_frame()
- * @param fb Frame buffer to free
- */
-void bsp_camera_frame_free(camera_fb_t *fb);
 
 
 

@@ -1,6 +1,8 @@
 #include "bsp_lcd.h"
 #include "string.h"
 #include "bsp_camera.h"
+#include "esp_attr.h"
+#include "freertos/semphr.h"
 /***************************LCD CODE START*******************************/
 void lcd_cs(uint8_t level){
     pca9557_set_pin(LCD_CS_GPIO, level); //PCA9557_GPIO_NUM_1
@@ -72,6 +74,48 @@ esp_lcd_panel_io_handle_t io_handle = NULL;
 // DMA缓冲区用于分块传输（每次传输50行）
 #define LCD_DMA_CHUNK_LINES 10  // 减小到 10 行，只需要 6400 字节
 static uint8_t *lcd_dma_buffer = NULL;
+static SemaphoreHandle_t lcd_flush_sem = NULL;
+static SemaphoreHandle_t lcd_io_mutex = NULL;
+static volatile bool lcd_flush_pending = false;
+
+static bool IRAM_ATTR lcd_color_trans_done_cb(esp_lcd_panel_io_handle_t panel_io,
+                                              esp_lcd_panel_io_event_data_t *edata,
+                                              void *user_ctx)
+{
+    BaseType_t high_task_wakeup = pdFALSE;
+    if (lcd_flush_sem != NULL) {
+        xSemaphoreGiveFromISR(lcd_flush_sem, &high_task_wakeup);
+    }
+    return high_task_wakeup == pdTRUE;
+}
+
+static esp_err_t lcd_wait_for_pending_flush(void)
+{
+    if (!lcd_flush_pending) {
+        return ESP_OK;
+    }
+
+    if (lcd_flush_sem == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(lcd_flush_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Timed out waiting for LCD DMA transfer");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    lcd_flush_pending = false;
+    return ESP_OK;
+}
+
+static void lcd_prepare_pending_flush(void)
+{
+    if (lcd_flush_sem != NULL) {
+        while (xSemaphoreTake(lcd_flush_sem, 0) == pdTRUE) {
+        }
+    }
+    lcd_flush_pending = true;
+}
 esp_err_t display_new(){
     ESP_LOGI("LCD", "display_new函数开始执行");
     //initialize the LCD
@@ -96,6 +140,14 @@ esp_err_t display_new(){
         ESP_LOGI("LCD", "SPI bus init failed");
         goto err;
     }
+
+    lcd_flush_sem = xSemaphoreCreateBinary();
+    lcd_io_mutex = xSemaphoreCreateMutex();
+    if (lcd_flush_sem == NULL || lcd_io_mutex == NULL) {
+        ESP_LOGE("LCD", "Failed to create LCD sync primitives");
+        ret = ESP_ERR_NO_MEM;
+        goto err;
+    }
     //初始化LCD面板IO
     ESP_LOGI("LCD", "Initializing LCD panel IO");
     esp_lcd_panel_io_spi_config_t io_config = {
@@ -105,7 +157,9 @@ esp_err_t display_new(){
         .lcd_cmd_bits=8,
         .lcd_param_bits=8,
         .spi_mode=2,
-        .trans_queue_depth=10,
+        .trans_queue_depth=5,
+        .on_color_trans_done = lcd_color_trans_done_cb,
+        .user_ctx = NULL,
         .flags = {
             .dc_low_on_data = 0,
             .octal_mode = 0,
@@ -160,6 +214,14 @@ esp_err_t display_new(){
     if (io_handle) {
         esp_lcd_panel_io_del(io_handle);
     }
+    if (lcd_flush_sem) {
+        vSemaphoreDelete(lcd_flush_sem);
+        lcd_flush_sem = NULL;
+    }
+    if (lcd_io_mutex) {
+        vSemaphoreDelete(lcd_io_mutex);
+        lcd_io_mutex = NULL;
+    }
     spi_bus_free(BSP_LCD_SPI_NUM);
     return ret;
 
@@ -168,6 +230,16 @@ void lcd_draw_bitmap(int x_start, int y_start, int x_end, int y_end, const void 
     
     if (!lcd_dma_buffer) {
         ESP_LOGE(TAG, "DMA buffer not allocated");
+        return;
+    }
+
+    if (lcd_io_mutex == NULL || lcd_flush_sem == NULL) {
+        ESP_LOGE(TAG, "LCD sync primitives not initialized");
+        return;
+    }
+
+    if (xSemaphoreTake(lcd_io_mutex, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to lock LCD IO");
         return;
     }
 
@@ -181,8 +253,16 @@ void lcd_draw_bitmap(int x_start, int y_start, int x_end, int y_end, const void 
         int chunk_lines = (y + LCD_DMA_CHUNK_LINES <= height) ? LCD_DMA_CHUNK_LINES : (height - y);
         size_t chunk_size = bytes_per_line * chunk_lines;
 
+        esp_err_t wait_ret = lcd_wait_for_pending_flush();
+        if (wait_ret != ESP_OK) {
+            xSemaphoreGive(lcd_io_mutex);
+            return;
+        }
+
         // 从PSRAM复制到内部DMA缓冲区
         memcpy(lcd_dma_buffer, src + y * bytes_per_line, chunk_size);
+
+        lcd_prepare_pending_flush();
 
         // 传输这个块
         esp_err_t ret = esp_lcd_panel_draw_bitmap(panel_handle,
@@ -193,9 +273,19 @@ void lcd_draw_bitmap(int x_start, int y_start, int x_end, int y_end, const void 
                                                    lcd_dma_buffer);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to draw chunk at y=%d: %s", y, esp_err_to_name(ret));
+            lcd_flush_pending = false;
+            xSemaphoreGive(lcd_io_mutex);
+            return;
+        }
+
+        wait_ret = lcd_wait_for_pending_flush();
+        if (wait_ret != ESP_OK) {
+            xSemaphoreGive(lcd_io_mutex);
             return;
         }
     }
+
+    xSemaphoreGive(lcd_io_mutex);
 }
 void lcd_set_color(int color){
     uint16_t *buffer = (uint16_t *)heap_caps_malloc(BSP_LCD_H_RES * sizeof(uint16_t), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
@@ -209,7 +299,7 @@ void lcd_set_color(int color){
             buffer[i]=color;
         }
         for (int y=0;y<BSP_LCD_V_RES;y++){
-            esp_lcd_panel_draw_bitmap(panel_handle, 0, y, BSP_LCD_H_RES, y+1, buffer);
+            lcd_draw_bitmap(0, y, BSP_LCD_H_RES, y + 1, buffer);
         }
         free(buffer);
     }
@@ -226,7 +316,7 @@ void lcd_draw_picture(int x,int y,int x_end,int y_end,const unsigned char *pic){
         return;
     }
     memcpy(buffer, pic, pixel_size);
-    esp_lcd_panel_draw_bitmap(panel_handle, x, y, x_end, y_end,(uint16_t *)buffer);
+    lcd_draw_bitmap(x, y, x_end, y_end, buffer);
     free(buffer);       
 }
 esp_err_t lcd_init(){
@@ -247,14 +337,25 @@ esp_err_t lcd_init(){
 }
 void lcd_display_cam(){
     //get a frame
+    if (bsp_camera_lock(0) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to lock camera API");
+        return;
+    }
     camera_fb_t * fb = esp_camera_fb_get();
+    bsp_camera_unlock();
+    if (fb == NULL) {
+        ESP_LOGE(TAG, "Camera Capture Failed");
+        return;
+    }
 
     //display the image on LCD
     //replace this with your own function
     //display_image(fb->width, fb->height, fb->format, fb->buf, fb->len);
 
     //return the frame buffer back to be reused
+    bsp_camera_lock(0);
     esp_camera_fb_return(fb);
+    bsp_camera_unlock();
 }
 /***************************LCD CODE END**********************************/
 
@@ -312,7 +413,13 @@ static void camera_task(void *arg) {
     const TickType_t frame_delay = pdMS_TO_TICKS(50); // 限制帧率到~20fps，减少撕裂
 
     while (1) {
+        if (bsp_camera_lock(0) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to lock camera API");
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
         fb = esp_camera_fb_get();
+        bsp_camera_unlock();
         if (fb == NULL){
             ESP_LOGE(TAG, "Camera Capture Failed");
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -320,9 +427,12 @@ static void camera_task(void *arg) {
         }
 
         // 发送帧到队列，如果队列满则跳过该帧
-        if (xQueueSend(camera_queue, &fb, 0) != pdTRUE) {
+        bool queued = (xQueueSend(camera_queue, &fb, 0) == pdTRUE);
+        if (!queued) {
             ESP_LOGW(TAG, "Queue full, dropping frame");
-            esp_camera_fb_return(fb); // 队列满时释放帧
+            bsp_camera_lock(0);
+            esp_camera_fb_return(fb);
+            bsp_camera_unlock();
         }
 
         vTaskDelay(frame_delay); // 控制采集帧率
@@ -339,11 +449,13 @@ static void lcd_task(void *arg) {
             for(uint16_t y = 0; y < fb->height; y += per_line){
                 uint16_t lines_to_draw = (y + per_line <= fb->height) ? per_line : (fb->height - y);
                 // 修正指针偏移计算：RGB565每像素2字节
-                esp_lcd_panel_draw_bitmap(panel_handle, 0, y, fb->width, y + lines_to_draw,
-                            (uint16_t *)(buf + y * fb->width));
+                lcd_draw_bitmap(0, y, fb->width, y + lines_to_draw,
+                                (uint16_t *)(buf + y * fb->width));
                 taskYIELD(); // 使用yield代替delay，减少撕裂
             }
+            bsp_camera_lock(0);
             esp_camera_fb_return(fb);
+            bsp_camera_unlock();
         }
     }
     vTaskDelete(NULL);
