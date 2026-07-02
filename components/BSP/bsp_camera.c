@@ -10,6 +10,22 @@
 #include "esp_heap_caps.h"
 #include <string.h>
 static const char *TAG = "bsp_camera";
+static SemaphoreHandle_t g_camera_api_mutex = NULL;
+
+static esp_err_t camera_api_mutex_init(void)
+{
+    if (g_camera_api_mutex != NULL) {
+        return ESP_OK;
+    }
+
+    g_camera_api_mutex = xSemaphoreCreateMutex();
+    if (g_camera_api_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create camera API mutex");
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_OK;
+}
 
 // Camera configuration
 static camera_config_t camera_config = {
@@ -49,6 +65,11 @@ esp_err_t bsp_camera_init(void)
 {
     esp_err_t ret;
 
+    ret = camera_api_mutex_init();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     // Initialize camera power control pin if using direct GPIO
 #ifndef BSP_CAMERA_USE_PCA9557_PWDN
     gpio_config_t io_conf = {
@@ -80,9 +101,33 @@ esp_err_t bsp_camera_init(void)
     return ESP_OK;
 }
 
+esp_err_t bsp_camera_lock(uint32_t timeout_ms)
+{
+    esp_err_t ret = camera_api_mutex_init();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    TickType_t timeout_ticks = (timeout_ms == 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    return (xSemaphoreTake(g_camera_api_mutex, timeout_ticks) == pdTRUE) ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+void bsp_camera_unlock(void)
+{
+    if (g_camera_api_mutex != NULL) {
+        xSemaphoreGive(g_camera_api_mutex);
+    }
+}
+
 esp_err_t bsp_camera_capture(void)
 {
+    esp_err_t ret = bsp_camera_lock(0);
+    if (ret != ESP_OK) {
+        return ret;
+    }
     camera_fb_t *fb = esp_camera_fb_get();
+    bsp_camera_unlock();
+
     if (!fb) {
         ESP_LOGE(TAG, "Camera capture failed");
         return ESP_FAIL;
@@ -90,7 +135,9 @@ esp_err_t bsp_camera_capture(void)
 
     // Process frame here if needed
 
+    bsp_camera_lock(0);
     esp_camera_fb_return(fb);
+    bsp_camera_unlock();
     return ESP_OK;
 }
 
@@ -107,7 +154,14 @@ static void camera_capture_task(void *arg)
     const TickType_t frame_delay = pdMS_TO_TICKS(50); // ~20fps
 
     while (1) {
+        if (bsp_camera_lock(0) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to lock camera API");
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
         camera_fb_t *new_fb = esp_camera_fb_get();
+        bsp_camera_unlock();
+
         if (new_fb == NULL) {
             ESP_LOGE(TAG, "Camera capture failed");
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -118,7 +172,9 @@ static void camera_capture_task(void *arg)
         xSemaphoreTake(g_fb_mutex, portMAX_DELAY);
 
         if (g_latest_fb != NULL) {
+            bsp_camera_lock(0);
             esp_camera_fb_return(g_latest_fb);
+            bsp_camera_unlock();
         }
 
         g_latest_fb = new_fb;
@@ -194,6 +250,7 @@ esp_err_t bsp_camera_tasks_init(void)
     ESP_LOGI(TAG, "Camera task system initialized successfully");
     return ESP_OK;
 }
+
 #include "bsp_lcd.h"
 
 static TaskHandle_t lcd_task_handle = NULL;
@@ -206,7 +263,13 @@ static void lcd_display_task(void *arg)
 
     while (1) {
         // 等待新帧
-        camera_fb_t *fb = bsp_camera_get_frame(1000);
+        if (bsp_camera_lock(0) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to lock camera API");
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        camera_fb_t *fb = esp_camera_fb_get();
+        bsp_camera_unlock();
         if (fb == NULL) {
             ESP_LOGW(TAG, "Failed to get frame for LCD display");
             continue;
@@ -215,7 +278,9 @@ static void lcd_display_task(void *arg)
         // 检查格式
         if (fb->format != PIXFORMAT_RGB565) {
             ESP_LOGE(TAG, "Unsupported pixel format for LCD: %d", fb->format);
-            bsp_camera_frame_free(fb);
+            bsp_camera_lock(0);
+            esp_camera_fb_return(fb);
+            bsp_camera_unlock();
             continue;
         }
 
@@ -234,7 +299,9 @@ static void lcd_display_task(void *arg)
         }
 
         // 释放帧
-        bsp_camera_frame_free(fb);
+        bsp_camera_lock(0);
+        esp_camera_fb_return(fb);
+        bsp_camera_unlock();
     }
 
     vTaskDelete(NULL);

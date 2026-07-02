@@ -67,7 +67,13 @@ static esp_err_t stream_handler(httpd_req_t *req)
 
     while(true){
         // 从共享缓冲区获取最新帧
-        camera_fb_t *fb = bsp_camera_get_frame(1000);
+        if (bsp_camera_lock(0) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to lock camera API");
+            res = ESP_FAIL;
+            break;
+        }
+        camera_fb_t *fb = esp_camera_fb_get();
+        bsp_camera_unlock();
         if (!fb) {
             ESP_LOGE(TAG, "Failed to get frame from shared buffer");
             res = ESP_FAIL;
@@ -79,7 +85,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
             is_converted = frame2jpg(fb, 50, &_jpg_buf, &_jpg_buf_len);
             if(!is_converted){
                 ESP_LOGE(TAG, "JPEG compression failed");
-                bsp_camera_frame_free(fb);
+                bsp_camera_lock(0);
+                esp_camera_fb_return(fb);
+                bsp_camera_unlock();
                 res = ESP_FAIL;
                 break;
             }
@@ -109,7 +117,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
         }
 
         // 释放帧副本
-        bsp_camera_frame_free(fb);
+        bsp_camera_lock(0);
+        esp_camera_fb_return(fb);
+        bsp_camera_unlock();
 
         if(res != ESP_OK){
             ESP_LOGI(TAG, "Stream client disconnected");

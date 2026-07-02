@@ -11,6 +11,10 @@
 #include <inttypes.h>
 #include "detection.h"
 #include "esp_cache.h"
+#define CANVAS_WIDTH    320
+#define CANVAS_HEIGHT   240
+#define PIXEL_BYTES     2  // RGB565 每个像素2字节
+#define BUFFER_SIZE     (CANVAS_WIDTH * CANVAS_HEIGHT * PIXEL_BYTES)  
 static const char *TAG = "bsp_ui";
 LV_FONT_DECLARE(lv_font_siyuanbold_jibenhanzi_16);
 size_t jpeg_len = 0;
@@ -23,7 +27,7 @@ static lv_obj_t *textarea_result = NULL;
 static lv_obj_t *camera_canvas = NULL;  // 使用 canvas 代替 image
 static lv_obj_t *btn_detect = NULL;
 // 页面状态
-static bool camera_view_active = false;
+static volatile bool camera_view_active = false;
 
 // Canvas 缓冲区（PSRAM）
 static uint8_t *canvas_buffer = NULL;
@@ -31,10 +35,9 @@ static uint8_t *canvas_buffer = NULL;
 // 摄像头显示任务句柄
 static TaskHandle_t camera_display_task_handle = NULL;
 //检测相关
-volatile static bool detection_enabled = false;          // 检测功能是否开启
-static detection_type_t current_detection_type = DETECTION_FACE; // 默认人脸检测
-//static void *detector_handle = NULL;            // 当前使用的检测器句柄
-
+static volatile bool detection_enabled = false;          // 检测功能是否开启
+detection_type_t current_detection_type =DETECTION_PEDESTRIAN; // 默认行人检测
+static void *detector_handle = NULL;            // 当前使用的检测器句柄
 
 // API 配置
 #define SERVER_HOST "115.190.73.223"
@@ -517,7 +520,9 @@ static void capture_and_upload_task(void *arg)
     uint8_t *jpeg_buf = NULL;
     camera_fb_t *fb = NULL;
     bool need_free_jpeg = false;
-
+    bsp_display_lock(0); // 锁定UI，防止状态更新冲突
+    lv_obj_invalidate(lv_scr_act()); // 确保按钮状态更新
+    bsp_display_unlock();
     // ========== 1. 检查WiFi连接 ==========
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif == NULL) {
@@ -536,7 +541,13 @@ static void capture_and_upload_task(void *arg)
 
     // ========== 2. 获取摄像头帧 ==========
     bsp_ui_update_status("Capturing...");
+    if (bsp_camera_lock(0) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to lock camera API");
+        bsp_ui_update_status("Camera busy");
+        goto exit;
+    }
     fb = esp_camera_fb_get();
+    bsp_camera_unlock();
     if (!fb) {
         ESP_LOGE(TAG, "Failed to capture image - no frame available");
         bsp_ui_update_status("Capture failed");
@@ -598,7 +609,9 @@ exit:
     }
     // 释放摄像头帧（使用 esp_camera_fb_return 归还原始帧）
     if (fb != NULL) {
+        bsp_camera_lock(0);
         esp_camera_fb_return(fb);
+        bsp_camera_unlock();
     }
     // 释放图片URL
     if (image_url != NULL) {
@@ -644,38 +657,67 @@ static void camera_display_task(void *arg)
 
     while (camera_view_active) {
         detection_result_t detect_results[10];
+        if (bsp_camera_lock(0) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to lock camera API");
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
         camera_fb_t *fb = esp_camera_fb_get();
+        bsp_camera_unlock();
         if (fb == NULL) {
             ESP_LOGW(TAG, "Failed to get camera frame");
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
+
+        if (fb->format != PIXFORMAT_RGB565 ||
+            fb->width != CANVAS_WIDTH ||
+            fb->height != CANVAS_HEIGHT ||
+            fb->len < BUFFER_SIZE) {
+            ESP_LOGE(TAG, "Unexpected camera frame: %ux%u format=%d len=%zu",
+                     (unsigned)fb->width, (unsigned)fb->height, fb->format, fb->len);
+            bsp_camera_lock(0);
+            esp_camera_fb_return(fb);
+            bsp_camera_unlock();
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        int detect_count = 0;
+        if (detection_enabled) {
+            detect_count = bsp_detection_run(current_detection_type, fb, detect_results, 10);
+            if (detect_count > 0) {
+                ESP_LOGI(TAG, "Detection results:");
+                for (int i = 0; i < detect_count; i++) {
+                    ESP_LOGI(TAG, "  %d: score=%.2f", i, detect_results[i].score);
+                }
+            }
+        }
         
 
         if (canvas_buffer != NULL && camera_canvas != NULL) {
+            bsp_display_lock(0);
             // 直接复制数据到 canvas 缓冲区，避免频繁创建 LVGL 图像对象
-            memcpy(canvas_buffer, fb->buf, fb->len);
-            esp_err_t ret = esp_cache_msync(canvas_buffer, buffer_size, 
-                                             ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            memcpy(canvas_buffer, fb->buf, BUFFER_SIZE);
             //如果开启检测
-            if(detection_enabled){
-                int detect_count = bsp_detection_run(current_detection_type,fb,detect_results,10);
-                if (detect_count > 0) {
-                    ESP_LOGI(TAG, "Detection results:");
-                    for (int i = 0; i < detect_count; i++) {
-                        ESP_LOGI(TAG, "  %d: score=%.2f", i, detect_results[i].score);
-                    }
-                    bsp_detection_draw_results((uint16_t*)canvas_buffer,fb->width,fb->height,detect_results,detect_count);
-                }
+            if (detect_count > 0) {
+                bsp_detection_draw_results((uint16_t*)canvas_buffer, fb->width, fb->height, detect_results, detect_count);
             }
             // 通知 LVGL 重绘画布
-            bsp_display_lock(0);
+            esp_err_t sync_ret = esp_cache_msync(canvas_buffer, BUFFER_SIZE,
+                                                 ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            if (sync_ret != ESP_OK) {
+                ESP_LOGW(TAG, "Canvas cache sync failed: %s", esp_err_to_name(sync_ret));
+            }
+
             lv_obj_invalidate(camera_canvas);
             bsp_display_unlock();
         }
 
         // 归还原始帧
+        bsp_camera_lock(0);
         esp_camera_fb_return(fb);
+        bsp_camera_unlock();
 
         // 增加延迟，避免饿死IDLE任务
         vTaskDelay(pdMS_TO_TICKS(50)); // 约 20fps，给IDLE任务更多时间
@@ -702,7 +744,7 @@ static void btn_start_cb(lv_event_t *e)
 
         // 分配 canvas 缓冲区（PSRAM）
         if (canvas_buffer == NULL) {
-            canvas_buffer = heap_caps_malloc(320 * 240 * 2, MALLOC_CAP_SPIRAM);
+            canvas_buffer = heap_caps_aligned_alloc(64,320 * 240 * 2, MALLOC_CAP_SPIRAM);
             if (canvas_buffer == NULL) {
                 ESP_LOGE(TAG, "Failed to allocate canvas buffer");
                 return;
@@ -713,7 +755,7 @@ static void btn_start_cb(lv_event_t *e)
         camera_view_active = true;
 
         bsp_display_lock(0);
-
+        lv_obj_invalidate(btn_start); // 确保按钮状态更新
         // 隐藏主页面的所有控件
         lv_obj_add_flag(btn_capture, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(btn_start, LV_OBJ_FLAG_HIDDEN);
@@ -786,14 +828,14 @@ static void btn_cancel_cb(lv_event_t *e)
             bsp_ui_update_result("Detection stopped");
         }
         if (canvas_buffer){
-            free(canvas_buffer);
+            heap_caps_free(canvas_buffer);
             canvas_buffer = NULL;
         }
         // 等待任务退出
         vTaskDelay(pdMS_TO_TICKS(100));
 
         bsp_display_lock(0);
-
+        
         // 删除 canvas 对象
         if (camera_canvas != NULL) {
             lv_obj_del(camera_canvas);
@@ -899,6 +941,7 @@ void bsp_ui_update_result(const char *text)
     if (textarea_result && text) {
         bsp_display_lock(0);
         lv_textarea_set_text(textarea_result, text);
+        lv_obj_invalidate(textarea_result); // 强制刷新文本框
         bsp_display_unlock();
     }
 }
@@ -909,7 +952,7 @@ void bsp_ui_update_status(const char *status)
     if (label_status && status) {
         bsp_display_lock(0);
         lv_label_set_text(label_status, status);
+        lv_obj_invalidate(lv_scr_act()); // 强制刷新状态标签
         bsp_display_unlock();
     }
 }
-
