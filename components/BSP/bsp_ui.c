@@ -776,6 +776,8 @@ static void btn_start_cb(lv_event_t *e)
         // 隐藏主页面的所有控件
         lv_obj_add_flag(btn_capture, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(btn_start, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(btn_detect, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(btn_cancel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(label_status, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(textarea_result, LV_OBJ_FLAG_HIDDEN);
 
@@ -788,9 +790,13 @@ static void btn_start_cb(lv_event_t *e)
         lv_obj_move_background(camera_canvas);  // 置底
 #endif
 
+#if CAMERA_PREVIEW_DIRECT_LCD
+        bsp_lvgl_timer_pause();
+#else
         // 显示 Cancel 按钮（置顶）
         lv_obj_clear_flag(btn_cancel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(btn_cancel);
+#endif
 
         bsp_display_unlock();
 
@@ -808,6 +814,16 @@ static void btn_start_cb(lv_event_t *e)
         if (ret != pdPASS) {
             ESP_LOGE(TAG, "Failed to create camera display task");
             camera_view_active = false;
+#if CAMERA_PREVIEW_DIRECT_LCD
+            bsp_lvgl_timer_resume();
+#endif
+            bsp_display_lock(0);
+            lv_obj_clear_flag(btn_capture, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(btn_start, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(btn_detect, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(label_status, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(textarea_result, LV_OBJ_FLAG_HIDDEN);
+            bsp_display_unlock();
         }
     }
 }
@@ -836,6 +852,9 @@ static void btn_cancel_cb(lv_event_t *e)
         ESP_LOGI(TAG, "Cancel button clicked - exiting camera view");
 
         // 停止摄像头显示任务
+#if CAMERA_PREVIEW_DIRECT_LCD
+        bsp_lvgl_timer_resume();
+#endif
         camera_view_active = false;
         while (camera_display_task_handle != NULL){
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -867,6 +886,7 @@ static void btn_cancel_cb(lv_event_t *e)
         // 显示主页面的控件
         lv_obj_clear_flag(btn_capture, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(btn_start, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(btn_detect, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(label_status, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(textarea_result, LV_OBJ_FLAG_HIDDEN);
 
