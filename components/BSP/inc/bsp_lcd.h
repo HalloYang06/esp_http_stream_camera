@@ -17,7 +17,7 @@
 #include "esp_heap_caps.h"
 #include "bsp_pca9557.h"
 
-#define BSP_LCD_PIXEL_CLOCK_HZ     (80 * 1000 * 1000)
+#define BSP_LCD_PIXEL_CLOCK_HZ     (40 * 1000 * 1000)
 #define BSP_LCD_SPI_NUM            (SPI3_HOST)
 #define LCD_CMD_BITS               (8)
 #define LCD_PARAM_BITS             (8)

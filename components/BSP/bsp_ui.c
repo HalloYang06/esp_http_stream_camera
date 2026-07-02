@@ -1,6 +1,7 @@
 #include "bsp_ui.h"
 #include "bsp_lvgl.h"
 #include "bsp_camera.h"
+#include "bsp_lcd.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_netif.h"
@@ -14,7 +15,9 @@
 #define CANVAS_WIDTH    320
 #define CANVAS_HEIGHT   240
 #define PIXEL_BYTES     2  // RGB565 每个像素2字节
-#define BUFFER_SIZE     (CANVAS_WIDTH * CANVAS_HEIGHT * PIXEL_BYTES)  
+#define BUFFER_SIZE     (CANVAS_WIDTH * CANVAS_HEIGHT * PIXEL_BYTES)
+#define CAMERA_PREVIEW_DIRECT_LCD 1
+#define DIRECT_LCD_CHUNK_LINES 10
 static const char *TAG = "bsp_ui";
 LV_FONT_DECLARE(lv_font_siyuanbold_jibenhanzi_16);
 size_t jpeg_len = 0;
@@ -653,10 +656,12 @@ static void btn_capture_cb(lv_event_t *e)
 // 摄像头显示任务 
 static void camera_display_task(void *arg)
 {
-    ESP_LOGI(TAG, "Camera display task started (Canvas Mode)");
+    ESP_LOGI(TAG, "Camera display task started");
 
     while (camera_view_active) {
+#if !CAMERA_PREVIEW_DIRECT_LCD
         detection_result_t detect_results[10];
+#endif
         if (bsp_camera_lock(0) != ESP_OK) {
             ESP_LOGE(TAG, "Failed to lock camera API");
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -683,6 +688,15 @@ static void camera_display_task(void *arg)
             continue;
         }
 
+#if CAMERA_PREVIEW_DIRECT_LCD
+        for (int y = 0; y < fb->height; y += DIRECT_LCD_CHUNK_LINES) {
+            int chunk_lines = (y + DIRECT_LCD_CHUNK_LINES <= fb->height) ?
+                              DIRECT_LCD_CHUNK_LINES :
+                              (fb->height - y);
+            const uint8_t *src = (const uint8_t *)fb->buf + y * fb->width * PIXEL_BYTES;
+            lcd_draw_bitmap(0, y, fb->width, y + chunk_lines, src);
+        }
+#else
         int detect_count = 0;
         if (detection_enabled) {
             detect_count = bsp_detection_run(current_detection_type, fb, detect_results, 10);
@@ -714,6 +728,7 @@ static void camera_display_task(void *arg)
             bsp_display_unlock();
         }
 
+#endif
         // 归还原始帧
         bsp_camera_lock(0);
         esp_camera_fb_return(fb);
@@ -742,6 +757,7 @@ static void btn_start_cb(lv_event_t *e)
             return;
         }
 
+#if !CAMERA_PREVIEW_DIRECT_LCD
         // 分配 canvas 缓冲区（PSRAM）
         if (canvas_buffer == NULL) {
             canvas_buffer = heap_caps_aligned_alloc(64,320 * 240 * 2, MALLOC_CAP_SPIRAM);
@@ -751,6 +767,7 @@ static void btn_start_cb(lv_event_t *e)
             }
             ESP_LOGI(TAG, "Canvas buffer allocated: %d bytes", 320 * 240 * 2);
         }
+#endif
 
         camera_view_active = true;
 
@@ -762,12 +779,14 @@ static void btn_start_cb(lv_event_t *e)
         lv_obj_add_flag(label_status, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(textarea_result, LV_OBJ_FLAG_HIDDEN);
 
+#if !CAMERA_PREVIEW_DIRECT_LCD
         // 创建 canvas 对象（全屏，作为背景层）
         lv_obj_t *screen = lv_screen_active();
         camera_canvas = lv_canvas_create(screen);
         lv_obj_set_pos(camera_canvas, 0, 0);
         lv_canvas_set_buffer(camera_canvas, canvas_buffer, 320, 240, LV_COLOR_FORMAT_RGB565);
         lv_obj_move_background(camera_canvas);  // 置底
+#endif
 
         // 显示 Cancel 按钮（置顶）
         lv_obj_clear_flag(btn_cancel, LV_OBJ_FLAG_HIDDEN);
