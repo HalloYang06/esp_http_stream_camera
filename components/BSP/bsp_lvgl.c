@@ -33,19 +33,21 @@ static void lvgl_timer_task(void *arg)
     ESP_LOGI(TAG, "LVGL Timer Task Started on Core %d", xPortGetCoreID());
 
     while (1) {
+        uint32_t delay = 20;
         // 检查是否暂停
         if (!lvgl_timer_paused) {
             bsp_display_lock(0);
-            uint32_t delay = lv_timer_handler();
+            delay = lv_timer_handler();
             bsp_display_unlock();
 
             // 限制最小延迟为20ms，减少 CPU 占用
             if (delay == 0 || delay > 100) {
-            delay = 20;
+                delay = 20;
+            }
         }
+
         vTaskDelay(pdMS_TO_TICKS(delay));
-        taskYIELD();  // 主动让出 CPU
-        }
+        taskYIELD();
     }
 }
 // Flush 回调函数

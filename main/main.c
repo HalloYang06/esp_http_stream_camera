@@ -111,13 +111,6 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "Camera initialized, LCD display controlled by button");
     }
-    ESP_LOGI(TAG, "Initializing face detection...");
-    ret = bsp_detection_init(DETECTION_FACE);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Face detection init failed: %s", esp_err_to_name(ret));
-    } else {
-        ESP_LOGI(TAG, "Face detection initialized successfully");
-    }
     // 初始化 UI 界面（即使摄像头失败也要显示 UI）
     ret = bsp_ui_init();
     if (ret != ESP_OK) {

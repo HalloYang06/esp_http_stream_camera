@@ -34,13 +34,15 @@ static volatile bool camera_view_active = false;
 
 // Canvas 缓冲区（PSRAM）
 static uint8_t *canvas_buffer = NULL;
+#if CAMERA_PREVIEW_DIRECT_LCD
+static uint8_t *preview_frame_buffer = NULL;
+#endif
 
 // 摄像头显示任务句柄
 static TaskHandle_t camera_display_task_handle = NULL;
 //检测相关
 static volatile bool detection_enabled = false;          // 检测功能是否开启
 detection_type_t current_detection_type =DETECTION_PEDESTRIAN; // 默认行人检测
-static void *detector_handle = NULL;            // 当前使用的检测器句柄
 
 // API 配置
 #define SERVER_HOST "115.190.73.223"
@@ -659,9 +661,7 @@ static void camera_display_task(void *arg)
     ESP_LOGI(TAG, "Camera display task started");
 
     while (camera_view_active) {
-#if !CAMERA_PREVIEW_DIRECT_LCD
         detection_result_t detect_results[10];
-#endif
         if (bsp_camera_lock(0) != ESP_OK) {
             ESP_LOGE(TAG, "Failed to lock camera API");
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -689,11 +689,38 @@ static void camera_display_task(void *arg)
         }
 
 #if CAMERA_PREVIEW_DIRECT_LCD
+        int detect_count = 0;
+        const uint8_t *display_buf = (const uint8_t *)fb->buf;
+
+        if (detection_enabled) {
+            detect_count = bsp_detection_run(current_detection_type, fb, detect_results, 10);
+            if (detect_count > 0) {
+                if (preview_frame_buffer == NULL) {
+                    preview_frame_buffer = heap_caps_aligned_alloc(64, BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+                    if (preview_frame_buffer == NULL) {
+                        ESP_LOGE(TAG, "Failed to allocate preview frame buffer");
+                    } else {
+                        ESP_LOGI(TAG, "Preview frame buffer allocated: %d bytes", BUFFER_SIZE);
+                    }
+                }
+
+                if (preview_frame_buffer != NULL) {
+                    memcpy(preview_frame_buffer, fb->buf, BUFFER_SIZE);
+                    bsp_detection_draw_results((uint16_t *)preview_frame_buffer,
+                                               fb->width,
+                                               fb->height,
+                                               detect_results,
+                                               detect_count);
+                    display_buf = preview_frame_buffer;
+                }
+            }
+        }
+
         for (int y = 0; y < fb->height; y += DIRECT_LCD_CHUNK_LINES) {
             int chunk_lines = (y + DIRECT_LCD_CHUNK_LINES <= fb->height) ?
                               DIRECT_LCD_CHUNK_LINES :
                               (fb->height - y);
-            const uint8_t *src = (const uint8_t *)fb->buf + y * fb->width * PIXEL_BYTES;
+            const uint8_t *src = display_buf + y * fb->width * PIXEL_BYTES;
             lcd_draw_bitmap(0, y, fb->width, y + chunk_lines, src);
         }
 #else
@@ -832,12 +859,19 @@ static void btn_detect_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
-        ESP_LOGI(TAG, "Detect button clicked - starting detection");
         if (!detection_enabled){
+            ESP_LOGI(TAG, "Detect button clicked - starting detection");
+            esp_err_t ret = bsp_detection_init(current_detection_type);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Detection init failed: %s", esp_err_to_name(ret));
+                bsp_ui_update_status("Detection init failed");
+                return;
+            }
             detection_enabled = true;
             bsp_ui_update_status("Detection STARTED");
         }else{
             detection_enabled = false;
+            bsp_detection_deinit(current_detection_type);
             bsp_ui_update_result("Detection stopped");
             ESP_LOGI(TAG, "Detection disabled");
         }
@@ -869,6 +903,12 @@ static void btn_cancel_cb(lv_event_t *e)
             heap_caps_free(canvas_buffer);
             canvas_buffer = NULL;
         }
+#if CAMERA_PREVIEW_DIRECT_LCD
+        if (preview_frame_buffer){
+            heap_caps_free(preview_frame_buffer);
+            preview_frame_buffer = NULL;
+        }
+#endif
         // 等待任务退出
         vTaskDelay(pdMS_TO_TICKS(100));
 
