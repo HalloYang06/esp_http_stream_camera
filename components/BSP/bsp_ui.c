@@ -2,10 +2,12 @@
 #include "bsp_lvgl.h"
 #include "bsp_camera.h"
 #include "bsp_lcd.h"
+#include "bsp_touch.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_netif.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "img_converters.h"
 #include <string.h>
@@ -18,6 +20,24 @@
 #define BUFFER_SIZE     (CANVAS_WIDTH * CANVAS_HEIGHT * PIXEL_BYTES)
 #define CAMERA_PREVIEW_DIRECT_LCD 1
 #define DIRECT_LCD_CHUNK_LINES 10
+#define DIRECT_BUTTON_HEIGHT 36
+#define DIRECT_BUTTON_MAX_WIDTH 142
+#define DIRECT_BUTTON_Y1 198
+#define DIRECT_BUTTON_Y2 (DIRECT_BUTTON_Y1 + DIRECT_BUTTON_HEIGHT)
+#define DIRECT_CONTROL_BAR_HEIGHT (CANVAS_HEIGHT - DIRECT_BUTTON_Y1)
+#define DIRECT_DETECT_X1 8
+#define DIRECT_DETECT_X2 150
+#define DIRECT_CANCEL_X1 188
+#define DIRECT_CANCEL_X2 312
+#define DIRECT_COLOR_BLACK 0x0000
+#define DIRECT_COLOR_WHITE 0xFFFF
+#define DIRECT_COLOR_BLUE 0x001F
+#define DIRECT_COLOR_GREEN 0x07E0
+#define DIRECT_COLOR_RED 0xF800
+#define DIRECT_COLOR_GRAY 0x8410
+#define DIRECT_DETECTION_MAX_RESULTS 10
+#define DIRECT_DETECTION_TASK_STACK_SIZE 32768
+#define DIRECT_DETECTION_PERIOD_MS 350
 static const char *TAG = "bsp_ui";
 LV_FONT_DECLARE(lv_font_siyuanbold_jibenhanzi_16);
 size_t jpeg_len = 0;
@@ -33,9 +53,23 @@ static lv_obj_t *btn_detect = NULL;
 static volatile bool camera_view_active = false;
 
 // Canvas 缓冲区（PSRAM）
+#if !CAMERA_PREVIEW_DIRECT_LCD
 static uint8_t *canvas_buffer = NULL;
+#endif
 #if CAMERA_PREVIEW_DIRECT_LCD
 static uint8_t *preview_frame_buffer = NULL;
+static uint16_t *direct_control_bar_buffer = NULL;
+static bool direct_touch_was_down = false;
+static volatile bool direct_controls_dirty = true;
+static TaskHandle_t ui_restore_task_handle = NULL;
+static TaskHandle_t direct_detection_task_handle = NULL;
+static StaticTask_t *direct_detection_task_buffer = NULL;
+static StackType_t *direct_detection_task_stack = NULL;
+static SemaphoreHandle_t direct_detection_results_mutex = NULL;
+static detection_result_t direct_detection_results[DIRECT_DETECTION_MAX_RESULTS];
+static int direct_detection_result_count = 0;
+static volatile bool direct_detection_stop_requested = false;
+static volatile bool direct_detection_model_ready = false;
 #endif
 
 // 摄像头显示任务句柄
@@ -44,7 +78,528 @@ static TaskHandle_t camera_display_task_handle = NULL;
 static volatile bool detection_enabled = false;          // 检测功能是否开启
 detection_type_t current_detection_type =DETECTION_PEDESTRIAN; // 默认行人检测
 
+static void ui_log_state(const char *where)
+{
+    bool heap_ok = heap_caps_check_integrity_all(false);
+    ESP_LOGI(TAG,
+             "%s: core=%d heap_ok=%d psram_free=%u internal_free=%u stack_hwm=%u active=%d detection=%d cam_task=%p",
+             where,
+             xPortGetCoreID(),
+             heap_ok ? 1 : 0,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)uxTaskGetStackHighWaterMark(NULL),
+             (int)camera_view_active,
+             (int)detection_enabled,
+             camera_display_task_handle);
+}
+
 // API 配置
+#if CAMERA_PREVIEW_DIRECT_LCD
+static const uint8_t *direct_get_glyph(char c)
+{
+    static const uint8_t glyph_space[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t glyph_a[7] = {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
+    static const uint8_t glyph_c[7] = {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E};
+    static const uint8_t glyph_d[7] = {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E};
+    static const uint8_t glyph_e[7] = {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F};
+    static const uint8_t glyph_f[7] = {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10};
+    static const uint8_t glyph_l[7] = {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
+    static const uint8_t glyph_n[7] = {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11};
+    static const uint8_t glyph_o[7] = {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
+    static const uint8_t glyph_t[7] = {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04};
+
+    switch (c) {
+    case 'A': return glyph_a;
+    case 'C': return glyph_c;
+    case 'D': return glyph_d;
+    case 'E': return glyph_e;
+    case 'F': return glyph_f;
+    case 'L': return glyph_l;
+    case 'N': return glyph_n;
+    case 'O': return glyph_o;
+    case 'T': return glyph_t;
+    default: return glyph_space;
+    }
+}
+
+static void direct_draw_char(uint16_t *buffer, int width, int height,
+                             int x, int y, char c, uint16_t color, int scale)
+{
+    const uint8_t *glyph = direct_get_glyph(c);
+
+    for (int row = 0; row < 7; row++) {
+        for (int col = 0; col < 5; col++) {
+            if ((glyph[row] & (1 << (4 - col))) == 0) {
+                continue;
+            }
+
+            for (int sy = 0; sy < scale; sy++) {
+                int py = y + row * scale + sy;
+                if (py < 0 || py >= height) {
+                    continue;
+                }
+
+                for (int sx = 0; sx < scale; sx++) {
+                    int px = x + col * scale + sx;
+                    if (px >= 0 && px < width) {
+                        buffer[py * width + px] = color;
+                    }
+                }
+            }
+        }
+    }
+}
+
+static bool direct_prepare_control_bar(void)
+{
+    size_t buffer_pixels = CANVAS_WIDTH * DIRECT_CONTROL_BAR_HEIGHT;
+    if (direct_control_bar_buffer == NULL) {
+        direct_control_bar_buffer = heap_caps_aligned_alloc(64,
+                                                            buffer_pixels * sizeof(uint16_t),
+                                                            MALLOC_CAP_SPIRAM);
+        if (direct_control_bar_buffer == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate direct preview control bar buffer");
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < buffer_pixels; i++) {
+        direct_control_bar_buffer[i] = DIRECT_COLOR_BLACK;
+    }
+
+    for (int x = 0; x < CANVAS_WIDTH; x++) {
+        direct_control_bar_buffer[x] = DIRECT_COLOR_GRAY;
+    }
+
+    return true;
+}
+
+static void direct_draw_button_to_control_bar(int x1, int y1, int x2, int y2,
+                                              const char *label, uint16_t fill_color)
+{
+    int width = x2 - x1;
+    int height = y2 - y1;
+    if (width <= 0 || height <= 0 ||
+        width > DIRECT_BUTTON_MAX_WIDTH ||
+        height > DIRECT_BUTTON_HEIGHT ||
+        y1 < DIRECT_BUTTON_Y1 ||
+        y2 > CANVAS_HEIGHT ||
+        direct_control_bar_buffer == NULL) {
+        return;
+    }
+
+    int rel_y1 = y1 - DIRECT_BUTTON_Y1;
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            bool border = (x < 2 || y < 2 || x >= width - 2 || y >= height - 2);
+            direct_control_bar_buffer[(rel_y1 + y) * CANVAS_WIDTH + (x1 + x)] =
+                border ? DIRECT_COLOR_WHITE : fill_color;
+        }
+    }
+
+    int len = strlen(label);
+    int scale = 2;
+    int text_width = (len > 0) ? (len * 6 * scale - scale) : 0;
+    int text_height = 7 * scale;
+    int text_x = x1 + (width - text_width) / 2;
+    int text_y = rel_y1 + (height - text_height) / 2;
+
+    for (int i = 0; i < len; i++) {
+        direct_draw_char(direct_control_bar_buffer,
+                         CANVAS_WIDTH,
+                         DIRECT_CONTROL_BAR_HEIGHT,
+                         text_x + i * 6 * scale, text_y,
+                         label[i], DIRECT_COLOR_WHITE, scale);
+    }
+}
+
+static void direct_draw_preview_controls(void)
+{
+    if (!direct_prepare_control_bar()) {
+        return;
+    }
+
+    direct_draw_button_to_control_bar(DIRECT_DETECT_X1,
+                                      DIRECT_BUTTON_Y1,
+                                      DIRECT_DETECT_X2,
+                                      DIRECT_BUTTON_Y2,
+                                      detection_enabled ? "DETECT ON" : "DETECT",
+                                      detection_enabled ? DIRECT_COLOR_GREEN : DIRECT_COLOR_BLUE);
+    direct_draw_button_to_control_bar(DIRECT_CANCEL_X1,
+                                      DIRECT_BUTTON_Y1,
+                                      DIRECT_CANCEL_X2,
+                                      DIRECT_BUTTON_Y2,
+                                      "CANCEL",
+                                      DIRECT_COLOR_RED);
+    lcd_draw_bitmap(0,
+                    DIRECT_BUTTON_Y1,
+                    CANVAS_WIDTH,
+                    CANVAS_HEIGHT,
+                    direct_control_bar_buffer);
+    direct_controls_dirty = false;
+}
+
+static bool direct_point_in_rect(uint16_t x, uint16_t y,
+                                 int x1, int y1, int x2, int y2)
+{
+    return x >= x1 && x < x2 && y >= y1 && y < y2;
+}
+
+static esp_err_t direct_detection_results_init(void)
+{
+    if (direct_detection_results_mutex != NULL) {
+        return ESP_OK;
+    }
+
+    direct_detection_results_mutex = xSemaphoreCreateMutex();
+    if (direct_detection_results_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create direct detection results mutex");
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_OK;
+}
+
+static void direct_detection_results_clear(void)
+{
+    if (direct_detection_results_mutex != NULL &&
+        xSemaphoreTake(direct_detection_results_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        direct_detection_result_count = 0;
+        memset(direct_detection_results, 0, sizeof(direct_detection_results));
+        xSemaphoreGive(direct_detection_results_mutex);
+        return;
+    }
+
+    direct_detection_result_count = 0;
+}
+
+static int direct_detection_results_read(detection_result_t *results, int max_results)
+{
+    int count = 0;
+    if (results == NULL || max_results <= 0 || direct_detection_results_mutex == NULL) {
+        return 0;
+    }
+
+    if (xSemaphoreTake(direct_detection_results_mutex, 0) != pdTRUE) {
+        return 0;
+    }
+
+    count = direct_detection_result_count;
+    if (count > max_results) {
+        count = max_results;
+    }
+    if (count > 0) {
+        memcpy(results, direct_detection_results, count * sizeof(detection_result_t));
+    }
+
+    xSemaphoreGive(direct_detection_results_mutex);
+    return count;
+}
+
+static void direct_detection_results_update(const detection_result_t *results, int count)
+{
+    if (direct_detection_results_init() != ESP_OK) {
+        return;
+    }
+
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > DIRECT_DETECTION_MAX_RESULTS) {
+        count = DIRECT_DETECTION_MAX_RESULTS;
+    }
+
+    if (xSemaphoreTake(direct_detection_results_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return;
+    }
+
+    direct_detection_result_count = count;
+    if (count > 0 && results != NULL) {
+        memcpy(direct_detection_results, results, count * sizeof(detection_result_t));
+    }
+
+    xSemaphoreGive(direct_detection_results_mutex);
+}
+
+static void direct_detection_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "Direct detection task started on Core %d", xPortGetCoreID());
+    ESP_LOGI(TAG, "Detection heap before init: PSRAM=%u internal=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+
+    esp_err_t ret = bsp_detection_init(current_detection_type);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Detection init failed in task: %s", esp_err_to_name(ret));
+        detection_enabled = false;
+        direct_detection_stop_requested = false;
+        direct_detection_model_ready = false;
+        direct_detection_results_clear();
+        direct_detection_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    direct_detection_model_ready = true;
+    ESP_LOGI(TAG, "Detection model ready");
+
+    while (!direct_detection_stop_requested) {
+        camera_fb_t *fb = NULL;
+
+        if (bsp_camera_lock(100) == ESP_OK) {
+            fb = esp_camera_fb_get();
+            bsp_camera_unlock();
+        }
+
+        if (fb == NULL) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        if (fb->format == PIXFORMAT_RGB565 &&
+            fb->width == CANVAS_WIDTH &&
+            fb->height == CANVAS_HEIGHT &&
+            fb->len >= BUFFER_SIZE) {
+            detection_result_t local_results[DIRECT_DETECTION_MAX_RESULTS];
+            int count = bsp_detection_run(current_detection_type,
+                                          fb,
+                                          local_results,
+                                          DIRECT_DETECTION_MAX_RESULTS);
+            if (!direct_detection_stop_requested) {
+                direct_detection_results_update(local_results, count);
+                ESP_LOGI(TAG, "Direct detection result count=%d", count);
+            }
+        } else {
+            ESP_LOGW(TAG, "Detection skipped unexpected frame: %ux%u format=%d len=%zu",
+                     (unsigned)fb->width,
+                     (unsigned)fb->height,
+                     fb->format,
+                     fb->len);
+        }
+
+        bsp_camera_lock(0);
+        esp_camera_fb_return(fb);
+        bsp_camera_unlock();
+
+        vTaskDelay(pdMS_TO_TICKS(DIRECT_DETECTION_PERIOD_MS));
+    }
+
+    if (direct_detection_model_ready) {
+        bsp_detection_deinit(current_detection_type);
+    }
+    direct_detection_model_ready = false;
+    detection_enabled = false;
+    direct_detection_stop_requested = false;
+    direct_detection_results_clear();
+    direct_controls_dirty = true;
+    ESP_LOGI(TAG, "Direct detection task stopped");
+    direct_detection_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+static esp_err_t direct_detection_task_start(void)
+{
+    if (direct_detection_task_handle != NULL) {
+        ESP_LOGW(TAG, "Detection task is already running or stopping");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (direct_detection_results_init() != ESP_OK) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (direct_detection_task_buffer == NULL) {
+        direct_detection_task_buffer = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+    }
+    if (direct_detection_task_stack == NULL) {
+        direct_detection_task_stack = heap_caps_malloc(DIRECT_DETECTION_TASK_STACK_SIZE, MALLOC_CAP_SPIRAM);
+    }
+
+    if (direct_detection_task_buffer == NULL || direct_detection_task_stack == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate direct detection task buffers");
+        if (direct_detection_task_buffer != NULL) {
+            heap_caps_free(direct_detection_task_buffer);
+            direct_detection_task_buffer = NULL;
+        }
+        if (direct_detection_task_stack != NULL) {
+            heap_caps_free(direct_detection_task_stack);
+            direct_detection_task_stack = NULL;
+        }
+        return ESP_ERR_NO_MEM;
+    }
+
+    direct_detection_stop_requested = false;
+    direct_detection_model_ready = false;
+    detection_enabled = true;
+    direct_detection_results_clear();
+
+    direct_detection_task_handle = xTaskCreateStaticPinnedToCore(direct_detection_task,
+                                                                 "direct_detect",
+                                                                 DIRECT_DETECTION_TASK_STACK_SIZE,
+                                                                 NULL,
+                                                                 1,
+                                                                 direct_detection_task_stack,
+                                                                 direct_detection_task_buffer,
+                                                                 1);
+    if (direct_detection_task_handle == NULL) {
+        ESP_LOGE(TAG, "Failed to create direct detection task");
+        detection_enabled = false;
+        direct_detection_stop_requested = false;
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+static void direct_detection_request_stop(void)
+{
+    if (!detection_enabled && direct_detection_task_handle == NULL) {
+        direct_detection_results_clear();
+        return;
+    }
+
+    ESP_LOGI(TAG, "Direct detection stop requested");
+    detection_enabled = false;
+    direct_detection_stop_requested = true;
+    direct_detection_results_clear();
+    direct_controls_dirty = true;
+}
+
+static void direct_preview_handle_touch(void)
+{
+    uint16_t x = 0;
+    uint16_t y = 0;
+    bool pressed = false;
+    esp_err_t ret = bsp_touch_read(&x, &y, &pressed);
+    if (ret != ESP_OK) {
+        return;
+    }
+
+    if (!pressed) {
+        direct_touch_was_down = false;
+        return;
+    }
+
+    if (direct_touch_was_down) {
+        return;
+    }
+    direct_touch_was_down = true;
+
+    ESP_LOGI(TAG, "Direct preview touch edge: x=%u y=%u", (unsigned)x, (unsigned)y);
+    ui_log_state("direct touch edge");
+
+    if (direct_point_in_rect(x, y,
+                             DIRECT_CANCEL_X1,
+                             DIRECT_BUTTON_Y1,
+                             DIRECT_CANCEL_X2,
+                             DIRECT_BUTTON_Y2)) {
+        ESP_LOGI(TAG, "Direct preview cancel touched");
+        ui_log_state("direct cancel touched");
+        camera_view_active = false;
+        return;
+    }
+
+    if (direct_point_in_rect(x, y,
+                             DIRECT_DETECT_X1,
+                             DIRECT_BUTTON_Y1,
+                             DIRECT_DETECT_X2,
+                             DIRECT_BUTTON_Y2)) {
+        if (!detection_enabled) {
+            ESP_LOGI(TAG, "Direct preview detect touched - starting detection task");
+            ui_log_state("direct detect start requested");
+            esp_err_t det_ret = direct_detection_task_start();
+            if (det_ret != ESP_OK) {
+                ESP_LOGE(TAG, "Detection task start failed: %s", esp_err_to_name(det_ret));
+                direct_controls_dirty = true;
+                return;
+            }
+            direct_controls_dirty = true;
+        } else {
+            ESP_LOGI(TAG, "Direct preview detect touched - stopping detection task");
+            ui_log_state("direct detect stop requested");
+            direct_detection_request_stop();
+        }
+    }
+}
+
+static void direct_release_preview_resources(void)
+{
+    direct_detection_request_stop();
+
+    if (preview_frame_buffer != NULL) {
+        heap_caps_free(preview_frame_buffer);
+        preview_frame_buffer = NULL;
+    }
+
+    if (direct_control_bar_buffer != NULL) {
+        heap_caps_free(direct_control_bar_buffer);
+        direct_control_bar_buffer = NULL;
+    }
+
+    direct_touch_was_down = false;
+    direct_controls_dirty = true;
+}
+
+static void direct_restore_home_now(void)
+{
+    ui_log_state("restore home begin");
+    direct_release_preview_resources();
+
+    bsp_display_lock(0);
+
+    if (camera_canvas != NULL) {
+        lv_obj_del(camera_canvas);
+        camera_canvas = NULL;
+    }
+
+    lv_obj_t *screen = lv_screen_active();
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    lv_obj_add_flag(btn_cancel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(btn_detect, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(btn_capture, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(btn_start, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(label_status, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(textarea_result, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(screen);
+
+    bsp_display_unlock();
+    bsp_lvgl_timer_resume();
+    ui_log_state("restore home done");
+}
+
+static void direct_restore_home_task(void *arg)
+{
+    (void)arg;
+    direct_restore_home_now();
+    ui_restore_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+static void direct_start_restore_home_task(void)
+{
+    if (ui_restore_task_handle != NULL) {
+        return;
+    }
+
+    BaseType_t ret = xTaskCreatePinnedToCore(direct_restore_home_task,
+                                             "ui_restore",
+                                             6144,
+                                             NULL,
+                                             4,
+                                             &ui_restore_task_handle,
+                                             1);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create UI restore task");
+        direct_restore_home_now();
+    } else {
+        ui_log_state("restore task created");
+    }
+}
+#endif
+
 #define SERVER_HOST "115.190.73.223"
 #define UPLOAD_ENDPOINT "/xiaozhi/admin/images"
 #define GLM_SERVER_HOST "10.121.121.110"  // Python 服务器 IP
@@ -659,8 +1214,16 @@ static void btn_capture_cb(lv_event_t *e)
 static void camera_display_task(void *arg)
 {
     ESP_LOGI(TAG, "Camera display task started");
+    ui_log_state("camera display start");
+    bool first_frame_logged = false;
 
     while (camera_view_active) {
+#if CAMERA_PREVIEW_DIRECT_LCD
+        direct_preview_handle_touch();
+        if (!camera_view_active) {
+            break;
+        }
+#endif
         detection_result_t detect_results[10];
         if (bsp_camera_lock(0) != ESP_OK) {
             ESP_LOGE(TAG, "Failed to lock camera API");
@@ -688,40 +1251,50 @@ static void camera_display_task(void *arg)
             continue;
         }
 
+        if (!first_frame_logged) {
+            ESP_LOGI(TAG, "Camera display first frame: fb=%p buf=%p len=%zu",
+                     fb, fb->buf, fb->len);
+            ui_log_state("camera display first frame");
+            first_frame_logged = true;
+        }
+
 #if CAMERA_PREVIEW_DIRECT_LCD
         int detect_count = 0;
         const uint8_t *display_buf = (const uint8_t *)fb->buf;
 
         if (detection_enabled) {
-            detect_count = bsp_detection_run(current_detection_type, fb, detect_results, 10);
-            if (detect_count > 0) {
+            detect_count = direct_detection_results_read(detect_results,
+                                                         DIRECT_DETECTION_MAX_RESULTS);
+            if (detect_count > 0 && preview_frame_buffer == NULL) {
+                preview_frame_buffer = heap_caps_aligned_alloc(64, BUFFER_SIZE, MALLOC_CAP_SPIRAM);
                 if (preview_frame_buffer == NULL) {
-                    preview_frame_buffer = heap_caps_aligned_alloc(64, BUFFER_SIZE, MALLOC_CAP_SPIRAM);
-                    if (preview_frame_buffer == NULL) {
-                        ESP_LOGE(TAG, "Failed to allocate preview frame buffer");
-                    } else {
-                        ESP_LOGI(TAG, "Preview frame buffer allocated: %d bytes", BUFFER_SIZE);
-                    }
+                    ESP_LOGE(TAG, "Failed to allocate preview frame buffer");
+                } else {
+                    ESP_LOGI(TAG, "Preview frame buffer allocated: %d bytes", BUFFER_SIZE);
                 }
+            }
 
-                if (preview_frame_buffer != NULL) {
-                    memcpy(preview_frame_buffer, fb->buf, BUFFER_SIZE);
-                    bsp_detection_draw_results((uint16_t *)preview_frame_buffer,
-                                               fb->width,
-                                               fb->height,
-                                               detect_results,
-                                               detect_count);
-                    display_buf = preview_frame_buffer;
-                }
+            if (detect_count > 0 && preview_frame_buffer != NULL) {
+                memcpy(preview_frame_buffer, fb->buf, BUFFER_SIZE);
+                bsp_detection_draw_results((uint16_t *)preview_frame_buffer,
+                                           fb->width,
+                                           fb->height,
+                                           detect_results,
+                                           detect_count);
+                display_buf = preview_frame_buffer;
             }
         }
 
-        for (int y = 0; y < fb->height; y += DIRECT_LCD_CHUNK_LINES) {
-            int chunk_lines = (y + DIRECT_LCD_CHUNK_LINES <= fb->height) ?
+        const int preview_height = DIRECT_BUTTON_Y1;
+        for (int y = 0; y < preview_height; y += DIRECT_LCD_CHUNK_LINES) {
+            int chunk_lines = (y + DIRECT_LCD_CHUNK_LINES <= preview_height) ?
                               DIRECT_LCD_CHUNK_LINES :
-                              (fb->height - y);
+                              (preview_height - y);
             const uint8_t *src = display_buf + y * fb->width * PIXEL_BYTES;
             lcd_draw_bitmap(0, y, fb->width, y + chunk_lines, src);
+        }
+        if (direct_controls_dirty) {
+            direct_draw_preview_controls();
         }
 #else
         int detect_count = 0;
@@ -766,7 +1339,11 @@ static void camera_display_task(void *arg)
     }
 
     ESP_LOGI(TAG, "Camera display task exiting");
+    ui_log_state("camera display exit");
     camera_display_task_handle = NULL;
+#if CAMERA_PREVIEW_DIRECT_LCD
+    direct_start_restore_home_task();
+#endif
     vTaskDelete(NULL);
     
 }
@@ -777,6 +1354,7 @@ static void btn_start_cb(lv_event_t *e)
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
         ESP_LOGI(TAG, "Start button clicked - entering camera view");
+        ui_log_state("start clicked");
 
         // 检查任务是否已存在
         if (camera_display_task_handle != NULL) {
@@ -797,6 +1375,7 @@ static void btn_start_cb(lv_event_t *e)
 #endif
 
         camera_view_active = true;
+        direct_controls_dirty = true;
 
         bsp_display_lock(0);
         lv_obj_invalidate(btn_start); // 确保按钮状态更新
@@ -817,21 +1396,28 @@ static void btn_start_cb(lv_event_t *e)
         lv_obj_move_background(camera_canvas);  // 置底
 #endif
 
-#if CAMERA_PREVIEW_DIRECT_LCD
-        bsp_lvgl_timer_pause();
-#else
         // 显示 Cancel 按钮（置顶）
+#if CAMERA_PREVIEW_DIRECT_LCD
+        lv_obj_invalidate(lv_screen_active());
+#else
         lv_obj_clear_flag(btn_cancel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(btn_cancel);
 #endif
 
         bsp_display_unlock();
+        ui_log_state("start ui hidden");
+
+#if CAMERA_PREVIEW_DIRECT_LCD
+        direct_touch_was_down = false;
+        bsp_lvgl_timer_pause();
+        ui_log_state("start lvgl paused");
+#endif
 
         // 创建摄像头显示任务
         BaseType_t ret = xTaskCreatePinnedToCore(
             camera_display_task,
             "cam_display",
-            4096,
+            6144,
             NULL,
             1,  // 优先级降到1，IDLE任务是0，确保IDLE能运行
             &camera_display_task_handle,
@@ -841,16 +1427,24 @@ static void btn_start_cb(lv_event_t *e)
         if (ret != pdPASS) {
             ESP_LOGE(TAG, "Failed to create camera display task");
             camera_view_active = false;
-#if CAMERA_PREVIEW_DIRECT_LCD
-            bsp_lvgl_timer_resume();
-#endif
             bsp_display_lock(0);
             lv_obj_clear_flag(btn_capture, LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(btn_start, LV_OBJ_FLAG_HIDDEN);
+#if CAMERA_PREVIEW_DIRECT_LCD
+            lv_obj_add_flag(btn_detect, LV_OBJ_FLAG_HIDDEN);
+#else
             lv_obj_clear_flag(btn_detect, LV_OBJ_FLAG_HIDDEN);
+#endif
             lv_obj_clear_flag(label_status, LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(textarea_result, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_invalidate(lv_screen_active());
             bsp_display_unlock();
+#if CAMERA_PREVIEW_DIRECT_LCD
+            bsp_lvgl_timer_resume();
+#endif
+            ui_log_state("start task create failed");
+        } else {
+            ui_log_state("start task created");
         }
     }
 }
@@ -859,6 +1453,10 @@ static void btn_detect_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
+#if CAMERA_PREVIEW_DIRECT_LCD
+        ESP_LOGW(TAG, "LVGL Detect ignored in direct preview mode");
+        return;
+#endif
         if (!detection_enabled){
             ESP_LOGI(TAG, "Detect button clicked - starting detection");
             esp_err_t ret = bsp_detection_init(current_detection_type);
@@ -884,11 +1482,16 @@ static void btn_cancel_cb(lv_event_t *e)
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
         ESP_LOGI(TAG, "Cancel button clicked - exiting camera view");
+        ui_log_state("lvgl cancel clicked");
 
         // 停止摄像头显示任务
 #if CAMERA_PREVIEW_DIRECT_LCD
-        bsp_lvgl_timer_resume();
-#endif
+        camera_view_active = false;
+        if (camera_display_task_handle == NULL) {
+            direct_start_restore_home_task();
+        }
+        return;
+#else
         camera_view_active = false;
         while (camera_display_task_handle != NULL){
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -931,6 +1534,7 @@ static void btn_cancel_cb(lv_event_t *e)
         lv_obj_clear_flag(textarea_result, LV_OBJ_FLAG_HIDDEN);
 
         bsp_display_unlock();
+#endif
     }
 }
 
@@ -950,6 +1554,7 @@ esp_err_t bsp_ui_init(void)
 
     // 设置屏幕背景为黑色
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
 
     // ========== 主页面控件 ==========
     // 创建"拍照上传"按钮（右上角）
@@ -995,6 +1600,9 @@ esp_err_t bsp_ui_init(void)
     lv_obj_t *label_detect = lv_label_create(btn_detect);
     lv_label_set_text(label_detect, "Detect");
     lv_obj_center(label_detect);
+#if CAMERA_PREVIEW_DIRECT_LCD
+    lv_obj_add_flag(btn_detect, LV_OBJ_FLAG_HIDDEN);
+#endif
 
     // ========== 摄像头查看页面控件 ==========
     // 创建"Cancel"按钮（底部中间，默认隐藏）
@@ -1007,6 +1615,9 @@ esp_err_t bsp_ui_init(void)
     lv_obj_t *label_cancel = lv_label_create(btn_cancel);
     lv_label_set_text(label_cancel, "Cancel");
     lv_obj_center(label_cancel);
+
+    lv_obj_invalidate(screen);
+    lv_refr_now(NULL);
 
     bsp_display_unlock();
 

@@ -28,22 +28,6 @@ void app_main(void)
         wifi_save_config("Redmi K70 Pro", "88888888");  // 替换成你的 WiFi 名称和密码
     }
 
-    // 检查是否已配置 WiFi
-    if (wifi_is_configured()) {
-        ESP_LOGI(TAG, "WiFi configured, connecting in STA mode");
-        wifi_init_sta();
-    } else {
-        ESP_LOGI(TAG, "First boot, entering AP config mode");
-        ESP_LOGI(TAG, "Connect to AP: ESP32-CAM-Setup");
-        ESP_LOGI(TAG, "Password: 12345678");
-        ESP_LOGI(TAG, "Then visit: http://192.168.4.1");
-        wifi_init_smartconfig();
-
-        // 配网模式下不初始化摄像头，等待配网完成后重启
-        ESP_LOGI(TAG, "Config mode running, waiting for WiFi setup...");
-        return;
-    }
-
     vTaskDelay(pdMS_TO_TICKS(500));
 
     ret=bsp_i2c_init();
@@ -103,14 +87,9 @@ void app_main(void)
         return;  // 继续运行，显示错误信息
     }
 
-    // 创建摄像头采集任务
-    ret = bsp_camera_tasks_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Camera Tasks Init Failed:%s", esp_err_to_name(ret));
-        // 不要 return，继续初始化 UI
-    } else {
-        ESP_LOGI(TAG, "Camera initialized, LCD display controlled by button");
-    }
+    // UI/Detect/Upload paths use the official camera API directly under bsp_camera_lock().
+    // Keep the unused background capture task stopped so it cannot compete for frame buffers.
+    ESP_LOGI(TAG, "Camera initialized, direct API mode enabled");
     // 初始化 UI 界面（即使摄像头失败也要显示 UI）
     ret = bsp_ui_init();
     if (ret != ESP_OK) {
@@ -120,6 +99,31 @@ void app_main(void)
 
     ESP_LOGI(TAG, "UI initialized successfully");
     ESP_LOGI(TAG, "System ready - Touch buttons to interact");
+
+    // Keep the LVGL home UI visible even if WiFi connection blocks or fails.
+    if (wifi_is_configured()) {
+        ESP_LOGI(TAG, "WiFi configured, connecting in STA mode");
+        wifi_init_sta();
+        ret = start_mdns_service();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "mDNS ready: http://esp32cam.local/");
+        } else {
+            ESP_LOGW(TAG, "mDNS start failed:%s", esp_err_to_name(ret));
+        }
+
+        ret = start_http_server();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "HTTP Server Failed:%s", esp_err_to_name(ret));
+        }
+    } else {
+        ESP_LOGI(TAG, "First boot, entering AP config mode");
+        ESP_LOGI(TAG, "Connect to AP: ESP32-CAM-Setup");
+        ESP_LOGI(TAG, "Password: 12345678");
+        ESP_LOGI(TAG, "Then visit: http://192.168.4.1");
+        wifi_init_smartconfig();
+        ESP_LOGI(TAG, "Config mode running, waiting for WiFi setup...");
+        return;
+    }
     // 创建摄像头和LCD任务
     //LcdDisplayCameraTaskCreate();
 /*    // 测试网络连接（访问百度）

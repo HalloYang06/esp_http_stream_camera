@@ -16,35 +16,7 @@ esp_lcd_touch_handle_t bsp_touch_init(void)
     }
 
     // 配置中断引脚（可选）
-    if (BSP_TOUCH_INT_GPIO != GPIO_NUM_NC) {
-        gpio_config_t io_conf = {
-            .pin_bit_mask = (1ULL << BSP_TOUCH_INT_GPIO),
-            .mode = GPIO_MODE_INPUT,
-            .pull_up_en = GPIO_PULLUP_ENABLE,
-            .pull_down_en = GPIO_PULLDOWN_DISABLE,
-            .intr_type = GPIO_INTR_DISABLE,
-        };
-        gpio_config(&io_conf);
-    }
-
     // 配置复位引脚（可选）
-    if (BSP_TOUCH_RST_GPIO != GPIO_NUM_NC) {
-        gpio_config_t io_conf = {
-            .pin_bit_mask = (1ULL << BSP_TOUCH_RST_GPIO),
-            .mode = GPIO_MODE_OUTPUT,
-            .pull_up_en = GPIO_PULLUP_DISABLE,
-            .pull_down_en = GPIO_PULLDOWN_DISABLE,
-            .intr_type = GPIO_INTR_DISABLE,
-        };
-        gpio_config(&io_conf);
-
-        // 复位触摸芯片
-        gpio_set_level(BSP_TOUCH_RST_GPIO, 0);
-        vTaskDelay(pdMS_TO_TICKS(10));
-        gpio_set_level(BSP_TOUCH_RST_GPIO, 1);
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
     // 获取I2C总线句柄
     i2c_master_bus_handle_t i2c_bus = bsp_i2c_bus_handle;
     if (i2c_bus == NULL) {
@@ -86,7 +58,6 @@ esp_lcd_touch_handle_t bsp_touch_init(void)
     }
 
     ESP_LOGI(TAG, "Touch initialized successfully (FT6336)");
-    esp_lcd_touch_new_i2c_ft5x06(tp_io_handle, &tp_cfg, &touch_handle);
     return touch_handle;
 }
 
